@@ -1,0 +1,4 @@
+# Line endings: the repository stores LF; Windows batch files are checked out with CRLF.
+* text=auto eol=lf
+*.bat text eol=crlf
+*.cmd text eol=crlf
