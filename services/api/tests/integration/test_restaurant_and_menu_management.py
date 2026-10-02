@@ -21,10 +21,10 @@ async def test_restaurant_and_menu_management_flow(client, db_session, new_brows
     assert rest_data["name_ar"] == "جبران"
     assert rest_data["branch"]["name_ar"] == "بوليفارد العبدلي"
     assert len(rest_data["branch"]["opening_hours"]) == 7
-    friday = next(day for day in rest_data["branch"]["opening_hours"] if day["day_of_week"] == 5)
-    assert "صلاة الجمعة" in friday["notes_ar"]
-    # The restaurant's other locations come along (the assistant tells guests about them).
-    assert [branch["name_ar"] for branch in rest_data["other_branches"]] == ["فرع الجاردنز - شارع وصفي التل"]
+    # Jubran opens 09:00 to 01:30 every day (no notes) and has a single branch.
+    assert all((day["opens_at"], day["closes_at"], day["notes_ar"]) == ("09:00", "01:30", None)
+               for day in rest_data["branch"]["opening_hours"])
+    assert rest_data["other_branches"] == []
 
     # 3. Public Restaurant Profile
     public_rest_res = await client.get("/api/v1/restaurant")
@@ -47,6 +47,12 @@ async def test_restaurant_and_menu_management_flow(client, db_session, new_brows
     assert updated_rest["branch"]["phone"] == "+962 6 500 8888"
 
     # Hours saved without their notes keep the notes; an empty note clears it.
+    with_friday_note = [{"day_of_week": d["day_of_week"], "opens_at": d["opens_at"], "closes_at": d["closes_at"],
+                         **({"notes_ar": "مغلق خلال صلاة الجمعة", "notes_en": "Closed during Friday prayer"}
+                            if d["day_of_week"] == 5 else {})}
+                        for d in rest_data["branch"]["opening_hours"]]
+    noted = await admin.patch("/api/v1/admin/restaurant", json={"opening_hours": with_friday_note})
+    assert noted.status_code == 200
     hours_without_notes = [{"day_of_week": d["day_of_week"], "opens_at": d["opens_at"], "closes_at": "02:00"}
                            for d in rest_data["branch"]["opening_hours"]]
     kept = (await admin.patch("/api/v1/admin/restaurant", json={"opening_hours": hours_without_notes})).json()

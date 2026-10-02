@@ -59,7 +59,7 @@ services/api/media/
 # Public test link (run_public.bat): its own photo folder
 services/api/media-public/
 
-# Internal notes, handoff docs and AI-assistant files (only README.md is published;
+# Internal notes and handoff docs (only README.md is published;
 # CREDITS.md stays because the photo licences require attribution)
 *.md
 !/README.md

@@ -1,9 +1,11 @@
 """Provider-backed semantic indexing and pgvector retrieval for restaurant knowledge."""
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import logging
 import math
+import re
 from array import array
 from collections import OrderedDict
 
@@ -65,6 +67,31 @@ class EmbeddingTarget:
     def label(self) -> str:
         """Stored with every indexed document; a different label means re-embedding."""
         return self.model if self.provider == "gemini" else f"{self.provider}:{self.model}"
+
+
+GEMINI_BATCH_LIMIT = 100  # texts per Gemini embedding request (the API's own limit)
+GEMINI_RATE_LIMIT_RETRIES = 3  # indexing waits this many times for a per-minute rate limit
+
+
+async def _embed_batch(client: Any, model: str, batch: list[str], config: Any, retries: int) -> Any:
+    """One Gemini embedding request; can wait out a per-minute rate limit (never a daily one)."""
+    from google.genai import types
+
+    for attempt in range(retries + 1):
+        try:
+            return await client.aio.models.embed_content(
+                model=model,
+                contents=[types.Content(parts=[types.Part(text=item)]) for item in batch],
+                config=config,
+            )
+        except Exception as exc:
+            message = str(exc)
+            if attempt == retries or "429" not in message or "PerDay" in message:
+                raise
+            delay = re.search(r"retryDelay['\"]?:\s*['\"](\d+(?:\.\d+)?)s", message)
+            wait = min(float(delay.group(1)) + 1 if delay else 30.0, 65.0)
+            logger.info("Embedding rate limit reached; retrying in %.0f s", wait)
+            await asyncio.sleep(wait)
 
 
 class EmbeddingService:
@@ -137,13 +164,18 @@ class EmbeddingService:
         from google.genai import types
 
         client = genai.Client(api_key=api_key)
+        config = types.EmbedContentConfig(task_type=task_type, output_dimensionality=EMBEDDING_DIMENSIONS)
+        vectors: list[list[float]] = []
         try:
-            response = await client.aio.models.embed_content(
-                model=model,
-                contents=texts,
-                config=types.EmbedContentConfig(task_type=task_type, output_dimensionality=EMBEDDING_DIMENSIONS),
-            )
-            return [list(item.values or []) for item in (response.embeddings or [])]
+            # Gemini takes at most GEMINI_BATCH_LIMIT texts per request, and each text goes in
+            # its own Content: newer models fold a plain list of strings into one vector.
+            # Indexing many texts may wait out a per-minute limit; a guest's question never waits.
+            retries = GEMINI_RATE_LIMIT_RETRIES if len(texts) > 1 else 0
+            for start in range(0, len(texts), GEMINI_BATCH_LIMIT):
+                batch = texts[start:start + GEMINI_BATCH_LIMIT]
+                response = await _embed_batch(client, model, batch, config, retries)
+                vectors.extend(list(item.values or []) for item in (response.embeddings or []))
+            return vectors
         finally:
             await client.aio.aclose()
             client.close()

@@ -115,7 +115,8 @@ async def test_restarts_keep_every_admin_edit(engine):
         fridays = (await db.execute(select(OpeningHourModel).where(OpeningHourModel.day_of_week == 5))).scalars().all()
     assert (t1.shape, t1.seat_count, t1.x_percent) == (TableShape.RECTANGLE, 8, 20.0)
     assert drinks.is_active is False
-    assert (friday.opens_at, friday.notes_ar) == ("12:00", "الجمعة بعد الصلاة")
+    # Jubran has one branch, so one Friday, and it keeps the edit.
+    assert [(day.opens_at, day.notes_ar) for day in fridays] == [("12:00", "الجمعة بعد الصلاة")]
 
 
 @pytest.mark.asyncio
