@@ -4,7 +4,7 @@ import { createContext, useCallback, useContext, useEffect, useRef, useState } f
 import { usePathname } from "next/navigation";
 import Image from "next/image";
 import { AnimatePresence, motion, useDragControls, type PanInfo, type Variants } from "motion/react";
-import { X } from "lucide-react";
+import { ChevronRight, X } from "lucide-react";
 import { useLanguage } from "@/context/LanguageContext";
 import { AssistantChatPanel } from "@/components/customer/AssistantChatPanel";
 import { useMediaQuery, WIDE_QUERY } from "@/lib/useMediaQuery";
@@ -323,24 +323,39 @@ export function AssistantBubbleProvider({ children }: { children: React.ReactNod
                       animate={{ opacity: 1, x: 0, scale: 1 }}
                       exit={{ opacity: 0, scale: 0.92, transition: { duration: 0.15 } }}
                       transition={spring.smooth}
-                      className="relative mb-3 hidden max-w-[15rem] rounded-2xl rounded-ee-md border border-line bg-elevated py-3 pe-4 ps-5 text-sm font-medium leading-relaxed text-ink shadow-float min-[400px]:block"
+                      className="relative hidden w-[min(16rem,calc(100vw-6.5rem))] rounded-2xl border border-line bg-elevated text-ink shadow-float min-[400px]:block"
                     >
                       <button
                         type="button"
                         onClick={openAssistant}
-                        className="text-start"
+                        className="block w-full rounded-2xl p-4 pe-10 text-start"
                       >
-                        <span className="block font-bold text-brand">{t("أهلاً وسهلاً 👋", "Welcome 👋")}</span>
-                        <span className="text-muted">{t("أنا نادلك الذكي، بساعدك تختار وتطلب.", "I'm your smart waiter: I'll help you choose and order.")}</span>
+                        <span className="flex items-center gap-2 text-[0.9375rem] font-bold leading-tight">
+                          <span className="size-2 shrink-0 rounded-full bg-success" aria-hidden="true" />
+                          {t("أهلاً وسهلاً", "Hi there")}
+                          <span aria-hidden="true">👋</span>
+                        </span>
+                        <span className="mt-1.5 block text-pretty text-sm leading-relaxed text-muted">
+                          {t("أنا نادلك الذكي، بساعدك تختار وتطلب.", "I'm your smart waiter. I'll help you choose and order.")}
+                        </span>
+                        <span className="mt-3 inline-flex items-center gap-1 rounded-full border border-brand-line bg-brand-soft px-3 py-1 text-xs font-bold text-brand-soft-ink">
+                          {t("اسألني الآن", "Ask me now")}
+                          <ChevronRight className="size-3.5 rtl:-scale-x-100" aria-hidden="true" />
+                        </span>
                       </button>
                       <button
                         type="button"
                         onClick={dismissHint}
                         aria-label={t("إخفاء", "Dismiss")}
-                        className="absolute -start-2 -top-2 flex size-6 items-center justify-center rounded-full border border-line bg-surface text-muted shadow-card transition-colors hover:text-ink"
+                        className="absolute end-2.5 top-2.5 flex size-7 items-center justify-center rounded-full text-muted transition-colors hover:bg-surface-3 hover:text-ink"
                       >
-                        <X className="size-3.5" aria-hidden="true" />
+                        <X className="size-4" aria-hidden="true" />
                       </button>
+                      {/* A small tail pointing at the round button. */}
+                      <span
+                        className="absolute -end-[7px] bottom-6 size-3 rotate-45 border-e border-t border-line bg-elevated rtl:-rotate-45 sm:bottom-[26px]"
+                        aria-hidden="true"
+                      />
                     </motion.div>
                   )}
                 </AnimatePresence>
