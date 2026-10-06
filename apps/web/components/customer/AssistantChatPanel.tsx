@@ -99,6 +99,48 @@ function ChatSkeleton() {
   );
 }
 
+/** What the waiter is doing while a reply is on its way, so the wait never looks stuck. */
+function ThinkingBubble() {
+  const { t } = useLanguage();
+  const [step, setStep] = useState(0);
+  useEffect(() => {
+    const timers = [1200, 3500, 9000].map((delay, index) => window.setTimeout(() => setStep(index + 1), delay));
+    return () => timers.forEach((timer) => window.clearTimeout(timer));
+  }, []);
+  const steps = [
+    t("أقرأ رسالتك", "Reading your message"),
+    t("أبحث في القائمة", "Checking the menu"),
+    t("أكتب الرد", "Writing the reply"),
+    t("لحظة، قربت أخلص", "Almost there"),
+  ];
+  return (
+    <div role="status" aria-live="polite" className="flex h-11 items-center gap-2.5 rounded-[1.25rem] rounded-es-md border border-line bg-surface px-4 shadow-card">
+      <span className="flex items-center gap-1" dir="ltr" aria-hidden="true">
+        {[0, 1, 2].map((dot) => (
+          <motion.span
+            key={dot}
+            className="size-1.5 rounded-full bg-brand-soft-ink"
+            animate={{ y: [0, -3, 0], opacity: [0.35, 1, 0.35] }}
+            transition={{ duration: 1.1, repeat: Infinity, delay: dot * 0.16, ease: "easeInOut" }}
+          />
+        ))}
+      </span>
+      <AnimatePresence mode="wait" initial={false}>
+        <motion.span
+          key={step}
+          initial={{ opacity: 0, y: 6 }}
+          animate={{ opacity: 1, y: 0 }}
+          exit={{ opacity: 0, y: -6 }}
+          transition={{ duration: 0.18 }}
+          className="text-[0.8125rem] font-medium text-muted"
+        >
+          {steps[step]}…
+        </motion.span>
+      </AnimatePresence>
+    </div>
+  );
+}
+
 export function AssistantChatPanel({ open = true, onClose, onHeaderPointerDown }: {
   /** Whether the chat is showing (it stays mounted while closed). */
   open?: boolean;
@@ -965,19 +1007,7 @@ export function AssistantChatPanel({ open = true, onClose, onHeaderPointerDown }
               className="flex items-end gap-2"
             >
               <Image src="/brand/jubran-emblem.webp" alt="" width={56} height={56} className="size-7 rounded-full bg-brand object-cover" />
-              <div role="status" aria-live="polite" className="flex h-11 items-center rounded-[1.25rem] rounded-es-md border border-line bg-surface px-4 shadow-card">
-                <span className="sr-only">{t("المساعد يكتب ردّه…", "The assistant is typing…")}</span>
-                <span className="flex items-center gap-1.5" dir="ltr" aria-hidden="true">
-                  {[0, 1, 2].map((dot) => (
-                    <motion.span
-                      key={dot}
-                      className="size-2 rounded-full bg-brand/70"
-                      animate={{ y: [0, -4, 0], opacity: [0.35, 1, 0.35], scale: [0.85, 1, 0.85] }}
-                      transition={{ duration: 1.1, repeat: Infinity, delay: dot * 0.16, ease: "easeInOut" }}
-                    />
-                  ))}
-                </span>
-              </div>
+              <ThinkingBubble />
             </motion.div>
           )}
         </AnimatePresence>
