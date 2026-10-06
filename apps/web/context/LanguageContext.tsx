@@ -16,11 +16,11 @@ interface LanguageContextType {
 }
 
 const LanguageContext = createContext<LanguageContextType>({
-  lang: "ar",
-  dir: "rtl",
+  lang: "en",
+  dir: "ltr",
   toggleLanguage: () => {},
   setLanguage: () => {},
-  t: (ar) => ar,
+  t: (_ar, en) => en,
 });
 
 function rememberLanguage(lang: Language) {
@@ -29,7 +29,7 @@ function rememberLanguage(lang: Language) {
   document.documentElement.lang = lang;
 }
 
-export function LanguageProvider({ initialLang = "ar", children }: { initialLang?: Language; children: React.ReactNode }) {
+export function LanguageProvider({ initialLang = "en", children }: { initialLang?: Language; children: React.ReactNode }) {
   const [lang, setLangState] = useState<Language>(initialLang);
 
   // Browsers that chose a language before it was kept in a cookie: carry it over once.

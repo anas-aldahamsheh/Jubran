@@ -27,7 +27,7 @@ const alexandria = Alexandria({
 
 // The browser tab title and description follow the visitor's language too.
 export async function generateMetadata(): Promise<Metadata> {
-  const english = (await cookies()).get(LANGUAGE_COOKIE)?.value === "en";
+  const english = (await cookies()).get(LANGUAGE_COOKIE)?.value !== "ar";
   return english
     ? {
         title: "Jubran | جبران — Levantine heritage, reimagined above Amman",
@@ -59,7 +59,8 @@ export default async function RootLayout({
 }) {
   const store = await cookies();
   // The guest's language and theme come with the request, so the first page is already right.
-  const lang: Language = store.get(LANGUAGE_COOKIE)?.value === "en" ? "en" : "ar";
+  // English until the visitor picks Arabic.
+  const lang: Language = store.get(LANGUAGE_COOKIE)?.value === "ar" ? "ar" : "en";
   const theme = parseThemePreference(store.get(THEME_COOKIE)?.value);
   return (
     <html

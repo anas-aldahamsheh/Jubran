@@ -8,14 +8,14 @@ import "./globals.css";
  */
 export default function GlobalError({ retry }: { error: Error & { digest?: string }; retry: () => void }) {
   return (
-    <html lang="ar" dir="rtl">
+    <html lang="en" dir="ltr">
       <body className="flex min-h-dvh flex-col items-center justify-center bg-canvas p-6 text-center text-ink antialiased">
-        <title>جبران | Jubran</title>
+        <title>Jubran | جبران</title>
         <main className="w-full max-w-md rounded-[2rem] border border-line bg-surface p-7 shadow-float" role="alert">
-          <h1 className="text-xl font-bold">صار خلل بسيط بفتح الموقع</h1>
-          <p className="mt-1 text-sm text-muted" dir="ltr">Something went wrong opening the site.</p>
+          <h1 className="text-xl font-bold">Something went wrong opening the site.</h1>
+          <p className="mt-1 text-sm text-muted" dir="rtl" lang="ar">صار خلل بسيط بفتح الموقع</p>
           <button type="button" onClick={() => retry()} className="btn btn-primary mt-6">
-            حاول مرة ثانية · Try again
+            Try again · حاول مرة ثانية
           </button>
         </main>
       </body>
