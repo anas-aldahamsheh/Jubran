@@ -826,8 +826,8 @@ export function AssistantChatPanel({ open = true, onClose, onHeaderPointerDown }
                   }`}
                 >
                   {isError && <CircleAlert className="mt-0.5 size-4 shrink-0" aria-hidden="true" />}
-                  {/* Each message reads in its own direction (an English question in the Arabic chat). */}
-                  <span dir="auto">{msg.text}</span>
+                  {/* Each line reads in its own direction: Arabic right to left, English left to right. */}
+                  <span dir="auto" className="block text-start [unicode-bidi:plaintext]">{msg.text}</span>
 
                   {/* The order summary, with its confirm button */}
                   {msg.action?.type === "AWAITING_ORDER_CONFIRMATION" && msg.draft && msg.draft.items && msg.draft.items.length > 0 && (
