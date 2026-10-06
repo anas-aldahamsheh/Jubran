@@ -145,6 +145,13 @@ class Settings(BaseSettings):
     # Behind a reverse proxy, run uvicorn with --proxy-headers so limits apply per visitor.
     RATE_LIMITS_ENABLED: bool = True
 
+    # Public demo, for a copy anyone on the internet can try (see application/public_demo.py):
+    # "Try as a guest" seats each visitor at a free table, a pretend kitchen prepares their
+    # orders, and the assistant answers at most this many messages a day in total (every
+    # visitor shares the server's AI key).
+    PUBLIC_DEMO: bool = False
+    PUBLIC_DEMO_ASSISTANT_TURNS_PER_DAY: int = 300
+
     # First administrator. Used only when that account does not exist yet; in
     # production it is required while the database has no active administrator.
     ADMIN_EMAIL: Optional[str] = None

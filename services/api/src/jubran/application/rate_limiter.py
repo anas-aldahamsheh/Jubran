@@ -38,6 +38,9 @@ LIMITS: dict[str, Limit] = {
     "order_amend": Limit(30, 60),         # +/- clicks on a sent order
     "customer_action": Limit(10, 60),     # service requests, complaints, feedback, cancel
     "admin_qr": Limit(30, 60),
+    # Public demo only (PUBLIC_DEMO): seats from one address, and the assistant's day for everyone.
+    "demo_visit_ip": Limit(6, 600),
+    "assistant_demo_day": Limit(settings.PUBLIC_DEMO_ASSISTANT_TURNS_PER_DAY, 86400),
 }
 
 _RETENTION_SECONDS = 2 * 86400

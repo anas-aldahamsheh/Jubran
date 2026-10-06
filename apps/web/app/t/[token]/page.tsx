@@ -6,6 +6,7 @@ import { useParams, useRouter } from "next/navigation";
 import { AnimatePresence, motion, useReducedMotion, type Variants } from "motion/react";
 import { ArrowRight, BellRing, MapPin, QrCode, ReceiptText, RefreshCw, UtensilsCrossed, WifiOff, X, type LucideIcon } from "lucide-react";
 import { apiFetch, ApiException } from "@/lib/api";
+import { isPublicDemo, PUBLIC_DEMO_ENTRY } from "@/lib/config";
 import { HeritageScene } from "@/components/common/HeritageScene";
 import { LanguageToggle } from "@/components/common/LanguageToggle";
 import { ThemeToggle } from "@/components/ui/ThemeToggle";
@@ -173,9 +174,11 @@ function TableWelcome({ session, hour }: { session: StartSessionResponse; hour: 
 }
 
 export default function QrEntryPage() {
-  const { dir, t } = useLanguage();
+  const { dir, lang, t } = useLanguage();
   const params = useParams();
   const token = params?.token as string;
+  // The public demo's "Try as a guest": no printed code, the restaurant seats the visitor at a free table.
+  const demoEntry = isPublicDemo && token === PUBLIC_DEMO_ENTRY;
 
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -197,10 +200,12 @@ export default function QrEntryPage() {
       try {
         setLoading(true);
         setError(null);
-        const data = await apiFetch<StartSessionResponse>("/table-sessions/start", {
-          method: "POST",
-          body: JSON.stringify({ qr_token: token }),
-        });
+        const data = demoEntry
+          ? await apiFetch<StartSessionResponse>("/demo/visit", { method: "POST" })
+          : await apiFetch<StartSessionResponse>("/table-sessions/start", {
+              method: "POST",
+              body: JSON.stringify({ qr_token: token }),
+            });
         setWelcomeHour(new Date().getHours());
         setOfflineFailures(0);
         setSessionData(data);
@@ -209,7 +214,7 @@ export default function QrEntryPage() {
           setOfflineFailures((count) => count + 1);
         } else if (err instanceof ApiException) {
           setOfflineFailures(0);
-          setError(err.message);
+          setError(lang === "en" && typeof err.details?.message_en === "string" ? err.details.message_en : err.message);
         } else {
           setError(t("تعذر التعرف على الطاولة. يرجى مسح رمز الطاولة مرة أخرى.", "Could not identify the table. Please scan the table QR code again."));
         }
@@ -289,11 +294,20 @@ export default function QrEntryPage() {
                       <span className="flex size-16 items-center justify-center rounded-full bg-danger-soft text-danger">
                         <X className="size-8" aria-hidden="true" />
                       </span>
-                      <h2 className="mt-4 font-display text-xl font-bold text-danger-ink">{t("رمز الطاولة غير صالح", "Invalid table code")}</h2>
+                      <h2 className="mt-4 font-display text-xl font-bold text-danger-ink">
+                        {demoEntry ? t("ما قدرنا نجهّز طاولتك", "We couldn't seat you just now") : t("رمز الطاولة غير صالح", "Invalid table code")}
+                      </h2>
                       <p className="mt-2 text-sm leading-relaxed text-muted">{error}</p>
-                      <p className="mt-5 border-t border-line pt-4 text-xs leading-relaxed text-subtle">
-                        {t("يرجى مسح رمز QR الموجود على طاولتك أو إبلاغ أحد موظفي المطعم للمساعدة.", "Please scan the QR code on your table or ask a staff member for help.")}
-                      </p>
+                      {demoEntry ? (
+                        <button type="button" onClick={retry} className="btn btn-primary mt-5">
+                          <RefreshCw className="size-[18px]" aria-hidden="true" />
+                          {t("إعادة المحاولة", "Try again")}
+                        </button>
+                      ) : (
+                        <p className="mt-5 border-t border-line pt-4 text-xs leading-relaxed text-subtle">
+                          {t("يرجى مسح رمز QR الموجود على طاولتك أو إبلاغ أحد موظفي المطعم للمساعدة.", "Please scan the QR code on your table or ask a staff member for help.")}
+                        </p>
+                      )}
                     </motion.div>
                   )}
 

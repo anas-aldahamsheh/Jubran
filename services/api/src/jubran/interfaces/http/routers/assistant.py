@@ -10,7 +10,7 @@ from jubran.application.ai.agent_service import AssistantService, clear_session_
 from jubran.application.ai.transcription_service import SpeechTranscriptionService
 from jubran.application.ai.voice_service import VoiceAssistantService
 from jubran.application.ai.content_state import content_version
-from jubran.interfaces.http.rate_limits import per_guest
+from jubran.interfaces.http.rate_limits import per_guest, public_demo_assistant_day
 from jubran.settings import settings
 
 router = APIRouter(prefix="/api/v1/assistant", tags=["AI Assistant"])
@@ -31,7 +31,7 @@ class ChatResponse(BaseModel):
 
 
 @router.post("/chat", response_model=ChatResponse,
-             dependencies=[per_guest("assistant_customer", "assistant_table")])
+             dependencies=[per_guest("assistant_customer", "assistant_table"), public_demo_assistant_day()])
 async def chat_with_assistant(
     req: ChatMessageRequest,
     ctx: Tuple[CustomerSessionModel, TableSessionModel, PhysicalTableModel] = Depends(get_required_customer_context),
@@ -118,7 +118,7 @@ async def clear_chat_history(
     return {"success": True}
 
 
-@router.post("/dictation", dependencies=[per_guest("assistant_audio")])
+@router.post("/dictation", dependencies=[per_guest("assistant_audio"), public_demo_assistant_day()])
 async def transcribe_dictation(
     audio: UploadFile = File(...),
     language: Optional[str] = None,
@@ -147,7 +147,7 @@ async def bootstrap_voice_session(
     return await VoiceAssistantService.voice_capabilities(db, physical_table.table_number)
 
 
-@router.post("/voice/turn", dependencies=[per_guest("assistant_customer", "assistant_table")])
+@router.post("/voice/turn", dependencies=[per_guest("assistant_customer", "assistant_table"), public_demo_assistant_day()])
 async def voice_speech_turn(
     req: VoiceTurnRequest,
     ctx: Tuple[CustomerSessionModel, TableSessionModel, PhysicalTableModel] = Depends(get_required_customer_context),
@@ -162,7 +162,8 @@ async def voice_speech_turn(
 
 
 @router.post("/voice/audio-turn",
-             dependencies=[per_guest("assistant_audio", "assistant_customer", "assistant_table")])
+             dependencies=[per_guest("assistant_audio", "assistant_customer", "assistant_table"),
+                           public_demo_assistant_day()])
 async def voice_audio_speech_turn(
     audio: UploadFile = File(...),
     language: Optional[str] = None,

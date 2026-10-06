@@ -12,8 +12,11 @@ WORKDIR /app
 ARG NEXT_PUBLIC_API_URL=""
 # The address printed inside table QR codes, e.g. https://order.example.com
 ARG NEXT_PUBLIC_SITE_URL=""
+# "true" for a copy anyone can try: "Try as a guest" on the sign-in page (with PUBLIC_DEMO=true on the API).
+ARG NEXT_PUBLIC_PUBLIC_DEMO=""
 ENV NEXT_PUBLIC_API_URL=$NEXT_PUBLIC_API_URL \
     NEXT_PUBLIC_SITE_URL=$NEXT_PUBLIC_SITE_URL \
+    NEXT_PUBLIC_PUBLIC_DEMO=$NEXT_PUBLIC_PUBLIC_DEMO \
     NEXT_TELEMETRY_DISABLED=1
 COPY --from=deps /app/node_modules ./node_modules
 COPY . .

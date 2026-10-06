@@ -7,9 +7,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from jubran.application import rate_limiter
 from jubran.application.rate_limiter import RateLimitExceeded
+from jubran.domain.exceptions import BusinessRuleError
 from jubran.infrastructure.db.models import CustomerSessionModel, PhysicalTableModel, TableSessionModel, UserModel
 from jubran.infrastructure.db.session import get_db_session
 from jubran.interfaces.http.dependencies import get_required_customer_context, require_admin
+from jubran.settings import settings
 
 CustomerContext = Tuple[CustomerSessionModel, TableSessionModel, PhysicalTableModel]
 
@@ -33,6 +35,24 @@ def per_guest(*buckets: str):
 def per_address(bucket: str):
     async def dependency(request: Request, db: AsyncSession = Depends(get_db_session)) -> None:
         await rate_limiter.hit(db, bucket, client_ip(request))
+    return Depends(dependency)
+
+
+def public_demo_assistant_day():
+    """Public demo: every visitor shares the server's AI key, so the assistant has a daily total."""
+    async def dependency(db: AsyncSession = Depends(get_db_session)) -> None:
+        if not settings.PUBLIC_DEMO:
+            return
+        try:
+            await rate_limiter.hit(db, "assistant_demo_day", "everyone")
+        except RateLimitExceeded as exc:
+            raise BusinessRuleError(
+                "النادل الذكي وصل حدّه اليومي في هذه النسخة التجريبية. جرّب مرة ثانية بكرة، والقائمة والطلب شغّالين.",
+                "DEMO_ASSISTANT_DAILY_LIMIT", 429,
+                {"retry_after_seconds": exc.retry_after,
+                 "message_en": "The smart waiter reached its daily limit on this demo. Please try again tomorrow; "
+                               "the menu and ordering still work."},
+            ) from None
     return Depends(dependency)
 
 

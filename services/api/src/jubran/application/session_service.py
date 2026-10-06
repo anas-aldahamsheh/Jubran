@@ -84,22 +84,25 @@ class SessionService:
             await db.flush()
 
         # 4. Create new Customer Session
-        raw_cust_token = secrets.token_urlsafe(32)
-        cust_token_hash = hash_token(raw_cust_token)
-        expires_at = now + timedelta(seconds=settings.SESSION_MAX_AGE_SECONDS)
-
-        cust_session = CustomerSessionModel(
-            table_session_id=active_table_session.id,
-            token_hash=cust_token_hash,
-            started_at=now,
-            expires_at=expires_at,
-            last_seen_at=now
-        )
-        db.add(cust_session)
+        raw_cust_token, cust_session = SessionService.add_guest(db, active_table_session, now)
         await db.commit()
         await db.refresh(cust_session)
 
         return raw_cust_token, cust_session, table
+
+    @staticmethod
+    def add_guest(db: AsyncSession, table_session: TableSessionModel, now: datetime) -> Tuple[str, CustomerSessionModel]:
+        """A new guest at this table visit: their raw visit token (for the cookie) and session. The caller commits."""
+        raw_cust_token = secrets.token_urlsafe(32)
+        cust_session = CustomerSessionModel(
+            table_session_id=table_session.id,
+            token_hash=hash_token(raw_cust_token),
+            started_at=now,
+            expires_at=now + timedelta(seconds=settings.SESSION_MAX_AGE_SECONDS),
+            last_seen_at=now
+        )
+        db.add(cust_session)
+        return raw_cust_token, cust_session
 
     @staticmethod
     async def get_customer_session_by_token(

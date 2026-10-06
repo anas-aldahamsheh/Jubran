@@ -158,6 +158,7 @@ npm --prefix apps/web run dev
 | `ADMIN_EMAIL`, `ADMIN_PASSWORD` | First administrator in production |
 | `GEMINI_API_KEY`, `OPENAI_API_KEY` | Default AI provider keys (can also be set per purpose in Admin → AI settings) |
 | `NEXT_PUBLIC_API_URL`, `NEXT_PUBLIC_SITE_URL` | Website build settings for production (API address and the address printed in QR codes) |
+| `PUBLIC_DEMO`, `NEXT_PUBLIC_PUBLIC_DEMO` | A copy anyone can try: "Try as a guest" on the sign-in page seats each visitor at a free table, a pretend kitchen prepares their orders, and the assistant answers `PUBLIC_DEMO_ASSISTANT_TURNS_PER_DAY` messages a day in total |
 
 > ⚠️ Never commit your real `.env` file — it is excluded by `.gitignore`.
 

@@ -10,6 +10,14 @@ export const isDemoMode = demoModeSetting
   ? demoModeSetting === "true"
   : process.env.NODE_ENV === "development";
 
+/**
+ * A copy anyone on the internet can try (NEXT_PUBLIC_PUBLIC_DEMO=true at build time, with
+ * PUBLIC_DEMO=true on the API): the sign-in page offers "Try as a guest", which opens
+ * /t/demo and the API seats the visitor at a free table of their own.
+ */
+export const isPublicDemo = process.env.NEXT_PUBLIC_PUBLIC_DEMO === "true";
+export const PUBLIC_DEMO_ENTRY = "demo";
+
 /** Base address printed inside table QR codes. */
 export function getPublicSiteUrl(): string {
   const configured = process.env.NEXT_PUBLIC_SITE_URL?.trim();

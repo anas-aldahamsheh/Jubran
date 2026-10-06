@@ -87,6 +87,10 @@ async def lifespan(app: FastAPI):
         asyncio.create_task(maintenance_loop(async_session_factory)),
         asyncio.create_task(EventRelay(async_session_factory, ws_manager).run()),
     ]
+    if settings.PUBLIC_DEMO:
+        # A copy anyone can try: a pretend kitchen prepares the visitors' orders.
+        from jubran.application.public_demo import demo_kitchen_loop
+        background.append(asyncio.create_task(demo_kitchen_loop(async_session_factory)))
 
     yield
     for task in background:
@@ -137,7 +141,7 @@ app.add_middleware(
 
 
 # Include Routers
-from jubran.interfaces.http.routers import auth, table_sessions, admin, menu, draft_and_orders, floor, customer_service, assistant, ai_models
+from jubran.interfaces.http.routers import auth, table_sessions, admin, menu, draft_and_orders, floor, customer_service, assistant, ai_models, public_demo
 from jubran.interfaces.websocket import routes as websocket_routes
 
 from jubran.application.rate_limiter import RateLimitExceeded
@@ -154,6 +158,7 @@ app.include_router(floor.router)
 app.include_router(customer_service.router)
 app.include_router(assistant.router)
 app.include_router(ai_models.router)
+app.include_router(public_demo.router)
 app.include_router(websocket_routes.router)
 
 

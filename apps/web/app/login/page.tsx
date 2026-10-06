@@ -1,10 +1,12 @@
 "use client";
 
 import { useState } from "react";
+import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { AnimatePresence, motion } from "motion/react";
-import { CircleAlert, Eye, EyeOff, LoaderCircle, LockKeyhole, LogIn, Mail, ShieldCheck } from "lucide-react";
+import { ArrowRight, CircleAlert, Eye, EyeOff, LoaderCircle, LockKeyhole, LogIn, Mail, ShieldCheck, UtensilsCrossed } from "lucide-react";
 import { apiFetch, ApiException } from "@/lib/api";
+import { isPublicDemo, PUBLIC_DEMO_ENTRY } from "@/lib/config";
 import { useLanguage } from "@/context/LanguageContext";
 import { HeritageScene } from "@/components/common/HeritageScene";
 import { LanguageToggle } from "@/components/common/LanguageToggle";
@@ -71,6 +73,25 @@ export default function AdminLoginPage() {
         className="m-auto w-full max-w-[27rem] px-4 pb-[max(2rem,env(safe-area-inset-bottom))] pt-8"
         aria-labelledby="login-title"
       >
+        {/* The public demo: visitors try the guest side; the sign-in below is for the restaurant. */}
+        {isPublicDemo && (
+          <Link
+            href={`/t/${PUBLIC_DEMO_ENTRY}`}
+            className="group animate-rise mb-4 flex items-center gap-3.5 rounded-[1.5rem] border border-brand-line bg-surface/85 p-4 shadow-float backdrop-blur-xl transition-colors hover:bg-surface sm:p-5"
+          >
+            <span className="flex size-12 shrink-0 items-center justify-center rounded-2xl bg-brand text-on-brand shadow-glow">
+              <UtensilsCrossed className="size-6" aria-hidden="true" />
+            </span>
+            <span className="min-w-0 flex-1">
+              <span className="block font-display text-lg font-bold leading-tight text-ink">{t("جرّب جبران كضيف", "Try Jubran as a guest")}</span>
+              <span className="mt-1 block text-sm leading-relaxed text-muted">
+                {t("طاولة لك، القائمة، النادل الذكي والطلب، ومطبخ تجريبي يحضّر طلبك.", "Your own table, the menu, the smart waiter and ordering, with a pretend kitchen preparing your order.")}
+              </span>
+            </span>
+            <ArrowRight className="size-5 shrink-0 text-brand transition-transform group-hover:translate-x-0.5 rtl:-scale-x-100 rtl:group-hover:-translate-x-0.5" aria-hidden="true" />
+          </Link>
+        )}
+
         <div className="animate-rise rounded-[2rem] border border-line bg-surface/85 p-6 shadow-float backdrop-blur-xl [--rise-delay:0.08s] sm:p-8">
           <div className="flex items-center gap-3.5">
             <span className="flex size-12 shrink-0 items-center justify-center rounded-2xl bg-brand text-on-brand shadow-glow">
