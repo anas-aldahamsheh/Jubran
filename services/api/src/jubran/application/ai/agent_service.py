@@ -366,6 +366,9 @@ class AssistantService:
     async def _run_turn(cls, db: AsyncSession, state: ConversationState, table_session_id: str,
                         table_number: str, user_message: str, language: Optional[str]) -> Dict[str, Any]:
         customer_session_id = state.customer_session_id
+        # Answer in the language the guest writes in, whatever the page language is
+        # (any Arabic letter means an Arabic speaker, even with an English dish name).
+        language = "ar" if _ARABIC_LETTERS.search(user_message) else written_language(user_message, language)
         fingerprint = await content_version(db)
         # A summary from an earlier turn may be outdated: e.g. the guest already
         # sent the basket from the orders page. Forget it instead of failing later.

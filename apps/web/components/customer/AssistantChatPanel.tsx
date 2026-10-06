@@ -391,10 +391,20 @@ export function AssistantChatPanel({ open = true, onClose, onHeaderPointerDown }
       }
 
 
+      // The reply appears word by word, as if being written.
+      const id = `ast-${Date.now()}`;
+      const words = response.response.split(/(\s+)/);
+      let shown = 1;
+      const timer = window.setInterval(() => {
+        shown += 2;
+        const text = words.slice(0, shown).join("");
+        setMessages((prev) => prev.map((message) => (message.id === id ? { ...message, text } : message)));
+        if (shown >= words.length) window.clearInterval(timer);
+      }, 35);
       const assistantMsg: ChatMessage = {
-        id: `ast-${Date.now()}`,
+        id,
         sender: "assistant",
-        text: response.response,
+        text: words[0] ?? "",
         draft: response.draft,
         action: response.action,
         table_number: response.table_number,
