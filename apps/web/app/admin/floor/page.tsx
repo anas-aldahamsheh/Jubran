@@ -20,6 +20,8 @@ import { StatusPill } from "@/components/ui/StatusPill";
 import { Toast } from "@/components/ui/Toast";
 import { ButtonSpinner, Skeleton } from "@/components/ui/Feedback";
 import { useAutoRetry } from "@/lib/useAutoRetry";
+import { useScrollRow } from "@/lib/useScrollRow";
+import { ScrollRowArrows } from "@/components/ui/ScrollRowArrows";
 import { EASE_OUT, fadeUp, spring, stagger } from "@/lib/motion";
 import { AddedLaterTag, OrderChangeNotice, type OrderAmendment } from "@/components/admin/OrderChanges";
 import { TableGuests } from "@/components/admin/TableGuests";
@@ -378,6 +380,8 @@ export default function AdminFloorPage() {
   const [viewMode, setViewMode] = useState<"split" | "grid">("split");
   const [zoomLevel, setZoomLevel] = useState<number>(1);
   const [statusFilter, setStatusFilter] = useState<string>("ALL");
+  const filterRowRef = useRef<HTMLDivElement>(null);
+  const filterRow = useScrollRow(filterRowRef);
   const [orderQueueFilter, setOrderQueueFilter] = useState<OrderQueueFilter>("PENDING_APPROVAL");
   const [serviceQueueFilter, setServiceQueueFilter] = useState<ServiceQueueFilter>("OPEN");
   const [searchQuery, setSearchQuery] = useState<string>("");
@@ -955,7 +959,9 @@ export default function AdminFloorPage() {
 
         {/* Status Filters & Search Bar */}
         <div className="flex flex-col gap-2.5 lg:flex-row lg:items-center lg:justify-between">
-          <div className="no-scrollbar fade-x -mx-1 flex items-center gap-1.5 overflow-x-auto px-1" role="group" aria-label={t("تصفية الطاولات", "Filter tables")}>
+          <div className="relative min-w-0 flex-1">
+          <ScrollRowArrows edges={filterRow.edges} onStep={filterRow.step} />
+          <div ref={filterRowRef} className="no-scrollbar fade-x -mx-1 flex items-center gap-1.5 overflow-x-auto px-1" role="group" aria-label={t("تصفية الطاولات", "Filter tables")}>
             {statusFilters.map((f) => {
               const active = statusFilter === f.id;
               return (
@@ -971,6 +977,7 @@ export default function AdminFloorPage() {
                 </button>
               );
             })}
+          </div>
           </div>
           <div className="flex flex-wrap items-center gap-2 lg:flex-nowrap">
             <div className="relative min-w-[16rem] flex-1 lg:w-80 lg:flex-none">

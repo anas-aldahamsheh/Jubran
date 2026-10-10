@@ -20,6 +20,8 @@ import { Toast } from "@/components/ui/Toast";
 import { apiFetch, ApiException } from "@/lib/api";
 import { useAutoRetry } from "@/lib/useAutoRetry";
 import { priceToFils } from "@/lib/price";
+import { useScrollRow } from "@/lib/useScrollRow";
+import { ScrollRowArrows } from "@/components/ui/ScrollRowArrows";
 import { useLanguage } from "@/context/LanguageContext";
 import { EASE_OUT, spring } from "@/lib/motion";
 
@@ -127,6 +129,8 @@ export default function AdminMenuPage() {
   const [products, setProducts] = useState<Product[]>([]);
   const [categories, setCategories] = useState<Category[]>([]);
   const [selectedCategory, setSelectedCategory] = useState<string | null>(null);
+  const categoryRowRef = useRef<HTMLDivElement>(null);
+  const categoryRow = useScrollRow(categoryRowRef);
   const [searchQuery, setSearchQuery] = useState("");
   const [loadingProducts, setLoadingProducts] = useState(true);
   const [togglingId, setTogglingId] = useState<string | null>(null);
@@ -827,7 +831,9 @@ export default function AdminMenuPage() {
 
               {/* Toolbar: categories, search and "add a dish" */}
               <div className="mb-5 flex flex-col gap-3 rounded-[1.5rem] border border-line bg-surface p-3 shadow-card lg:flex-row lg:items-center lg:justify-between">
-                <div className="no-scrollbar fade-x -mx-1 flex items-center gap-1.5 overflow-x-auto px-1" role="group" aria-label={t("تصفية حسب التصنيف", "Filter by category")}>
+                <div className="relative min-w-0 flex-1">
+                <ScrollRowArrows edges={categoryRow.edges} onStep={categoryRow.step} />
+                <div ref={categoryRowRef} className="no-scrollbar fade-x -mx-1 flex items-center gap-1.5 overflow-x-auto px-1" role="group" aria-label={t("تصفية حسب التصنيف", "Filter by category")}>
                   {categoryTabs.map((tab) => {
                     const active = selectedCategory === tab.id;
                     return (
@@ -844,6 +850,7 @@ export default function AdminMenuPage() {
                       </button>
                     );
                   })}
+                </div>
                 </div>
 
                 <div className="flex flex-wrap items-center gap-2 sm:flex-nowrap">

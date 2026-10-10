@@ -19,6 +19,8 @@ import { ButtonSpinner, EmptyState, LoadError, Reveal, SlowNote } from "@/compon
 import { StatusPill } from "@/components/ui/StatusPill";
 import { Toast } from "@/components/ui/Toast";
 import { useMediaQuery } from "@/lib/useMediaQuery";
+import { useScrollRow } from "@/lib/useScrollRow";
+import { ScrollRowArrows } from "@/components/ui/ScrollRowArrows";
 import { useAutoRetry } from "@/lib/useAutoRetry";
 import { formatFils } from "@/lib/price";
 import { otherLanguage } from "@/lib/otherLanguage";
@@ -118,6 +120,7 @@ export default function MenuPage() {
   const basketBeside = useMediaQuery("(min-width: 1280px)");
   const listTopRef = useRef<HTMLDivElement>(null);
   const chipsRef = useRef<HTMLDivElement>(null);
+  const chipsRow = useScrollRow(chipsRef);
 
   const loadData = async () => {
     if (loadingRef.current) return;
@@ -290,6 +293,7 @@ export default function MenuPage() {
           {/* Sections chips (up to wide screens) */}
           <motion.div layoutRoot className={`sticky top-16 z-30 -mx-4 mb-5 bg-canvas/85 py-2.5 backdrop-blur-xl sm:-mx-6 md:top-[4.5rem] lg:-mx-8 2xl:hidden ${hasVisit ? "xl:me-0" : ""}`}>
             {firstLoad && <div className="px-4 sm:px-6 lg:px-8"><CategoryChipsSkeleton /></div>}
+            {!firstLoad && !failed && <ScrollRowArrows edges={chipsRow.edges} onStep={chipsRow.step} className="mx-2 sm:mx-4 lg:mx-6" />}
             <motion.div layoutScroll ref={chipsRef} className={`no-scrollbar fade-x flex gap-2 overflow-x-auto px-4 sm:px-6 lg:px-8 ${firstLoad || failed ? "hidden" : ""}`} role="group" aria-label={t("تصنيفات القائمة", "Menu categories")}>
               {categoryTabs.map((tab) => {
                 const active = selectedCategory === tab.id;
