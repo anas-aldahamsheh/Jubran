@@ -256,10 +256,11 @@ export default function MenuPage() {
       <div className={`mx-auto grid w-full max-w-[1600px] gap-8 px-4 sm:px-6 lg:px-8 ${hasVisit ? "xl:grid-cols-[minmax(0,1fr)_22.5rem] 2xl:grid-cols-[13.5rem_minmax(0,1fr)_22.5rem]" : "2xl:grid-cols-[13.5rem_minmax(0,1fr)]"}`}>
         {/* Sections rail (wide screens) */}
         <aside className="hidden 2xl:block" aria-label={t("تصنيفات القائمة", "Menu categories")}>
-          <motion.nav layoutRoot className="sticky top-24">
+          {/* Never taller than the screen: a long list of sections scrolls inside the rail. */}
+          <motion.nav layoutRoot className="sticky top-24 flex max-h-[calc(100dvh-7rem)] flex-col">
             <p className="mb-3 px-3 text-xs font-bold tracking-wide text-subtle">{t("الأقسام", "Sections")}</p>
             {firstLoad && <CategoryChipsSkeleton rail />}
-            <ul className={`space-y-1 ${firstLoad || failed ? "hidden" : ""}`}>
+            <motion.ul layoutScroll className={`min-h-0 flex-1 space-y-1 overflow-y-auto pb-2 ${firstLoad || failed ? "hidden" : ""}`}>
               {categoryTabs.map((tab) => {
                 const active = selectedCategory === tab.id;
                 return (
@@ -281,7 +282,7 @@ export default function MenuPage() {
                   </li>
                 );
               })}
-            </ul>
+            </motion.ul>
           </motion.nav>
         </aside>
 
