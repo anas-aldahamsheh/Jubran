@@ -4,12 +4,19 @@ import { announceVisitEnded, markVisitActive } from "./visitStatus";
 const CONFIGURED_API_BASE = process.env.NEXT_PUBLIC_API_URL;
 
 /**
- * The configured API URL (set NEXT_PUBLIC_API_URL in production), or port 8001
+ * The configured API URL (set NEXT_PUBLIC_API_URL in production, either a full address or a path
+ * on the site's own address such as /api/v1), or port 8001
  * on the host that opened the site, with the same protocol (http or https), so
  * an HTTPS page never calls a plain-HTTP API (browsers block that).
  */
 export function getApiBaseUrl(): string {
-  if (CONFIGURED_API_BASE) return CONFIGURED_API_BASE.replace(/\/+$/, "");
+  if (CONFIGURED_API_BASE) {
+    const base = CONFIGURED_API_BASE.replace(/\/+$/, "");
+    // A path such as "/api/v1" is the API on the site's own address, so one build can serve
+    // the site under more than one domain.
+    if (base.startsWith("/") && typeof window !== "undefined") return `${window.location.origin}${base}`;
+    return base;
+  }
   if (typeof window === "undefined") return "http://localhost:8001/api/v1";
   return `${window.location.protocol}//${window.location.hostname}:8001/api/v1`;
 }

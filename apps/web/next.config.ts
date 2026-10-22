@@ -10,6 +10,8 @@ function apiSources(): string[] {
     // (same protocol as the page, see getApiBaseUrl).
     return ["http://*:8001", "ws://*:8001", "https://*:8001", "wss://*:8001"];
   }
+  // A path ("/api/v1") is on the site's own address, which 'self' already allows
+  if (configuredApi.startsWith("/")) return [];
   const origin = new URL(configuredApi).origin;
   return [origin, origin.replace(/^http/, "ws")];
 }
