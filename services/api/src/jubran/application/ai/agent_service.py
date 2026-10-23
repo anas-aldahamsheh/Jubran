@@ -196,6 +196,19 @@ def written_language(text: str, fallback: Optional[str]) -> Optional[str]:
     return fallback
 
 
+def guest_language(message: str, history: List[Dict[str, Any]], page_language: Optional[str]) -> Optional[str]:
+    """The language to answer in: the one the guest writes. The site opens in English, so the page
+    language alone would answer a short Arabic message ("مرحبا") in English: any Arabic letter
+    means an Arabic speaker. A message without letters ("2", "👍") keeps the language of the
+    guest's latest message that has some; the page language only when none has."""
+    for text in (message, *(m.get("content") for m in reversed(history) if m.get("role") == "user")):
+        if _ARABIC_LETTERS.search(text or ""):
+            return "ar"
+        if _LATIN_LETTERS.search(text or ""):
+            return "en"
+    return page_language
+
+
 _ORDER_NUMBER = re.compile(r"JB-\d+", re.IGNORECASE)
 ORDER_SENT_NOTE = ("[System] The guest pressed the confirm button on your order summary, and the server sent order "
                    "{number} to the restaurant, where it waits for the staff to accept it. Tell the guest in one short, "
@@ -424,9 +437,7 @@ class AssistantService:
                         table_number: str, user_message: str, language: Optional[str],
                         events: Optional[TurnEvents] = None) -> Dict[str, Any]:
         customer_session_id = state.customer_session_id
-        # The site opens in English, so the page language alone would answer a short Arabic
-        # message ("مرحبا") in English: any Arabic letter means an Arabic speaker.
-        language = "ar" if _ARABIC_LETTERS.search(user_message or "") else written_language(user_message, language)
+        language = guest_language(user_message, state.history, language)
         emit: TurnEvents = events or (lambda kind, data: None)
         written: List[str] = []  # the reply text streamed in the current model round
 

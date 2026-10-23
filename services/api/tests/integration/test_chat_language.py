@@ -2,7 +2,7 @@
 import pytest
 from sqlalchemy import select
 
-from jubran.application.ai.agent_service import AssistantService, interface_language, turn_context
+from jubran.application.ai.agent_service import AssistantService, guest_language, interface_language, turn_context
 from jubran.infrastructure.db.models import ProductModel
 from jubran.infrastructure.db.seed import seed_database
 from jubran.settings import settings
@@ -73,6 +73,15 @@ async def test_the_guest_is_answered_in_the_language_they_write_whatever_the_pag
 
     monkeypatch.setattr(settings, "GEMINI_API_KEY", "offline-test-key")
     monkeypatch.setattr(AssistantService, "_create_chat", classmethod(create_chat))
-    for message in ("مرحبا", "بدي burger", "hello"):
+    # "2" (the answer to "how many?") keeps the language the guest was writing in.
+    for message in ("مرحبا", "2", "بدي burger", "hello", "2"):
         await client.post("/api/v1/assistant/chat", json={"message": message, "language": "en"})
-    assert languages == [("ar", "Arabic "), ("ar", "Arabic "), ("en", "English")]
+    assert [language for language, _ in languages] == ["ar", "ar", "ar", "en", "en"]
+    assert languages[1][1] == "Arabic "
+
+
+def test_a_message_without_letters_keeps_the_guest_language():
+    history = [{"role": "user", "content": "بدي شاي"}, {"role": "assistant", "content": "How many?"}]
+    assert guest_language("2", history, "en") == "ar"
+    assert guest_language("👍", [], "en") == "en"
+    assert guest_language("2", [{"role": "user", "content": "one tea"}], "ar") == "en"
