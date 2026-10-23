@@ -2,6 +2,7 @@
 
 import { useLanguage } from "@/context/LanguageContext";
 import { formatFils } from "@/lib/price";
+import { unitLabel, type LineUnit } from "@/lib/units";
 import { ButtonSpinner } from "@/components/ui/Feedback";
 
 interface GuestOrder {
@@ -12,7 +13,7 @@ interface GuestOrder {
   is_served: boolean;
   created_at: string;
   total_minor?: number;
-  items: Array<{ name_ar: string; name_en?: string; quantity: number; added_later?: boolean }>;
+  items: Array<{ name_ar: string; name_en?: string; quantity: number; added_later?: boolean } & LineUnit>;
   amendments?: unknown[];
   needs_attention?: boolean;
   cancelled_by_guest?: boolean;
@@ -134,7 +135,10 @@ export function TableGuests({ orders, services, complaints, onOpenHistory, histo
                         </span>
                       </div>
                       <p className="mt-0.5 text-[0.6875rem] text-muted">
-                        {order.items.map((item) => `${item.quantity}× ${lang === "en" && item.name_en ? item.name_en : item.name_ar}${item.added_later ? t(" (مُضاف)", " (added)") : ""}`).join(t("، ", ", "))}
+                        {order.items.map((item) => {
+                          const unit = unitLabel(item, lang);
+                          return `${item.quantity}× ${lang === "en" && item.name_en ? item.name_en : item.name_ar}${unit ? ` · ${unit}` : ""}${item.added_later ? t(" (مُضاف)", " (added)") : ""}`;
+                        }).join(t("، ", ", "))}
                       </p>
                     </li>
                   );

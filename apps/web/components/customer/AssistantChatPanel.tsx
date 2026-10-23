@@ -8,33 +8,48 @@ import {
   ReceiptText, SendHorizontal, ShoppingBag, Square, Timer, Trash2, X,
 } from "lucide-react";
 import { fadeUp, spring, stagger } from "@/lib/motion";
-import { apiFetch, getCustomerSessionContext, ApiException } from "@/lib/api";
+import { apiFetch, apiStream, getCustomerSessionContext, ApiException } from "@/lib/api";
 import { announceDraftChanged } from "@/lib/draftEvents";
 import { hasVisitEnded, useVisitSignals } from "@/lib/visitStatus";
 import { speechLocale } from "@/lib/language";
 import { restaurantTime } from "@/lib/time";
+import { unitLabel, type LineUnit } from "@/lib/units";
+import { doneBadges, type DoneEntry } from "@/lib/assistantDone";
 import { canRecordClips, type Recording, startRecording } from "@/lib/voiceAudio";
 import type { LiveOrderAction } from "@/lib/liveVoiceClient";
 import { useLanguage } from "@/context/LanguageContext";
 import { useGlobalDialog } from "@/components/common/GlobalDialogProvider";
 import { useVoiceCall } from "./useVoiceCall";
 import { ButtonSpinner, Skeleton } from "@/components/ui/Feedback";
+import { UnitTag } from "@/components/ui/UnitTag";
 import { VoiceCallBar } from "./VoiceCallBar";
+import { AssistantStep, WritingText } from "./AssistantLiveReply";
 import Image from "next/image";
+
+// Hidden for now: set to true to bring the voice-call button back. The call itself is untouched.
+const VOICE_CALL_BUTTON_ENABLED = false;
 
 type ChatDraft = {
   item_count: number;
   total_display_ar: string;
   total_display_en?: string;
-  items: Array<{ name_ar: string; name_en?: string; quantity: number; line_total_display_ar: string; line_total_display_en?: string }>;
+  items: Array<{ name_ar: string; name_en?: string; quantity: number; line_total_display_ar: string; line_total_display_en?: string } & LineUnit>;
 };
 
-interface AmendmentChange {
-  type: "added" | "removed" | "quantity_changed";
+interface AmendmentChange extends LineUnit {
+  type: "added" | "removed" | "quantity_changed" | "note_changed" | "unit_changed";
   name_ar: string;
   name_en?: string;
   quantity_before: number;
   quantity_after: number;
+  note?: string | null;
+  /** note_changed: the note before and after (none: no note). */
+  note_before?: string | null;
+  note_after?: string | null;
+  /** unit_changed: how it was served before. */
+  unit_before?: string | null;
+  unit_before_display_ar?: string | null;
+  unit_before_display_en?: string | null;
 }
 
 interface AmendmentSummary {
@@ -60,9 +75,10 @@ interface ConfirmResult {
   response?: string | null;
   action?: ChatAction | null;
   draft?: ChatDraft | null;
+  done?: DoneEntry[];
 }
 
-type ServerHistory = { history: Array<{ role: string; content: string }>; content_version: string };
+type ServerHistory = { history: Array<{ role: string; content: string; done?: DoneEntry[] }>; content_version: string };
 
 /** The live voice's transcript can carry sound cues such as "[sigh]": they are heard, not read. */
 const withoutSoundCues = (text: string) => text.replace(/\[[a-z][a-z _-]{0,20}\]\s*/gi, "");
@@ -76,8 +92,23 @@ interface ChatMessage {
   callAgain?: boolean;
   draft?: ChatDraft;
   action?: ChatAction;
+  /** What the reply really did (the server's record), shown as badges under it. */
+  done?: DoneEntry[];
   table_number?: string;
   timestamp: string;
+  /** The reply is still appearing on screen (its cards show once it is written). */
+  writing?: boolean;
+  /** The server is still sending this reply. */
+  streaming?: boolean;
+}
+
+/** The finished turn, as the server sends it at the end of a streamed reply. */
+interface ChatTurnResult {
+  response: string;
+  draft?: ChatDraft;
+  action?: ChatAction;
+  done?: DoneEntry[];
+  table_number: string;
 }
 
 /** The conversation's shape while it loads: a few bubbles on both sides. */
@@ -99,48 +130,6 @@ function ChatSkeleton() {
   );
 }
 
-/** What the waiter is doing while a reply is on its way, so the wait never looks stuck. */
-function ThinkingBubble() {
-  const { t } = useLanguage();
-  const [step, setStep] = useState(0);
-  useEffect(() => {
-    const timers = [1200, 3500, 9000].map((delay, index) => window.setTimeout(() => setStep(index + 1), delay));
-    return () => timers.forEach((timer) => window.clearTimeout(timer));
-  }, []);
-  const steps = [
-    t("أقرأ رسالتك", "Reading your message"),
-    t("أبحث في القائمة", "Checking the menu"),
-    t("أكتب الرد", "Writing the reply"),
-    t("لحظة، قربت أخلص", "Almost there"),
-  ];
-  return (
-    <div role="status" aria-live="polite" className="flex h-11 items-center gap-2.5 rounded-[1.25rem] rounded-es-md border border-line bg-surface px-4 shadow-card">
-      <span className="flex items-center gap-1" dir="ltr" aria-hidden="true">
-        {[0, 1, 2].map((dot) => (
-          <motion.span
-            key={dot}
-            className="size-1.5 rounded-full bg-brand-soft-ink"
-            animate={{ y: [0, -3, 0], opacity: [0.35, 1, 0.35] }}
-            transition={{ duration: 1.1, repeat: Infinity, delay: dot * 0.16, ease: "easeInOut" }}
-          />
-        ))}
-      </span>
-      <AnimatePresence mode="wait" initial={false}>
-        <motion.span
-          key={step}
-          initial={{ opacity: 0, y: 6 }}
-          animate={{ opacity: 1, y: 0 }}
-          exit={{ opacity: 0, y: -6 }}
-          transition={{ duration: 0.18 }}
-          className="text-[0.8125rem] font-medium text-muted"
-        >
-          {steps[step]}…
-        </motion.span>
-      </AnimatePresence>
-    </div>
-  );
-}
-
 export function AssistantChatPanel({ open = true, onClose, onHeaderPointerDown }: {
   /** Whether the chat is showing (it stays mounted while closed). */
   open?: boolean;
@@ -155,6 +144,8 @@ export function AssistantChatPanel({ open = true, onClose, onHeaderPointerDown }
   const [historyLoaded, setHistoryLoaded] = useState(false);
   const [inputMessage, setInputMessage] = useState("");
   const [loading, setLoading] = useState(false);
+  // What the assistant is doing while the reply is prepared (shown instead of typing dots).
+  const [step, setStep] = useState("thinking");
   const [tableNumber, setTableNumber] = useState<string | null>(null);
   const [restaurantName, setRestaurantName] = useState<{ ar: string; en: string } | null>(null);
   const [isRecording, setIsRecording] = useState(false);
@@ -240,6 +231,9 @@ export function AssistantChatPanel({ open = true, onClose, onHeaderPointerDown }
       setConfirming(false);
       announceDraftChanged();
     },
+    onLiveDone: (done) => {
+      if (done.length) updateLiveReply((message) => ({ ...message, done: [...(message.done ?? []), ...done] }));
+    },
     onLiveConfirmFailed: () => {
       setConfirming(false);
       addProblem(t("لم يُرسل الطلب: راجع الملخص الجديد.", "The order wasn't sent: please review the updated summary."));
@@ -255,6 +249,7 @@ export function AssistantChatPanel({ open = true, onClose, onHeaderPointerDown }
           text: result.spoken_text,
           draft: result.draft as ChatDraft | undefined,
           action: result.action as ChatAction | undefined,
+          done: result.done as DoneEntry[] | undefined,
           timestamp: timeNow(),
         },
       ]);
@@ -308,6 +303,7 @@ export function AssistantChatPanel({ open = true, onClose, onHeaderPointerDown }
           id: `hist-${Date.now()}-${index}`,
           sender: message.role === "user" ? "user" : "assistant",
           text: message.content,
+          done: message.done,
           timestamp: "",
         })));
       }
@@ -344,6 +340,7 @@ export function AssistantChatPanel({ open = true, onClose, onHeaderPointerDown }
             id: `hist-${idx}`,
             sender: m.role === "user" ? "user" : "assistant",
             text: m.content,
+            done: m.done,
             timestamp: "",
           }));
           setMessages(mapped);
@@ -380,7 +377,21 @@ export function AssistantChatPanel({ open = true, onClose, onHeaderPointerDown }
   useEffect(() => {
     const list = listRef.current;
     list?.scrollTo({ top: list.scrollHeight, behavior: "smooth" });
-  }, [messages, loading]);
+  }, [messages.length, loading]);
+
+  // A reply being written grows line by line: it stays in view while the guest reads the latest.
+  const keepLatestInView = () => {
+    const list = listRef.current;
+    if (list && atBottomRef.current) list.scrollTop = list.scrollHeight;
+  };
+  const replyWritten = (id: string) => {
+    setMessages((prev) => prev.map((message) => (message.id === id ? { ...message, writing: false } : message)));
+    // Its cards (the order summary, the sent order) appear now.
+    requestAnimationFrame(() => {
+      const list = listRef.current;
+      if (list && atBottomRef.current) list.scrollTo({ top: list.scrollHeight, behavior: "smooth" });
+    });
+  };
 
   // When the keyboard opens (the conversation gets shorter), the latest message stays right above it.
   useEffect(() => {
@@ -414,47 +425,60 @@ export function AssistantChatPanel({ open = true, onClose, onHeaderPointerDown }
 
     setMessages((prev) => [...prev, userMsg]);
     setInputMessage("");
+    setStep("thinking");
     setLoading(true);
     sendingRef.current = true;
 
+    // The reply is written into the chat while the model writes it; until its first words,
+    // the assistant shows what it is doing (reading the menu, adding to the basket...).
+    const replyId = `ast-${Date.now()}`;
+    let replyShown = false;
+    const outcome: { finished: ChatTurnResult | null } = { finished: null };
+    const changeReply = (change: (message: ChatMessage) => ChatMessage) =>
+      setMessages((prev) => prev.map((message) => (message.id === replyId ? change(message) : message)));
     try {
-      const response = await apiFetch<{
-        response: string;
-        draft?: ChatDraft;
-        action?: ChatAction;
-        table_number: string;
-      }>("/assistant/chat", {
+      await apiStream("/assistant/chat/stream", {
         method: "POST",
         body: JSON.stringify({ message: text, language: lang }),
+      }, (event, data) => {
+        const payload = data as { step?: string; delta?: string } & Partial<ChatTurnResult>;
+        if (event === "step" && payload.step) {
+          setStep(payload.step);
+        } else if (event === "text" && payload.delta) {
+          const delta = payload.delta;
+          if (replyShown) {
+            changeReply((message) => ({ ...message, text: message.text + delta }));
+          } else {
+            replyShown = true;
+            setMessages((prev) => [...prev, {
+              id: replyId, sender: "assistant", text: delta, writing: true, streaming: true, timestamp: timeNow(),
+            }]);
+          }
+        } else if (event === "reset" && replyShown) {
+          // Words written before the assistant went on working are not its reply.
+          replyShown = false;
+          setMessages((prev) => prev.filter((message) => message.id !== replyId));
+        } else if (event === "done") {
+          outcome.finished = data as ChatTurnResult;
+        } else if (event === "error") {
+          throw new ApiException(data as { code: string; message: string; details?: Record<string, unknown> }, 503);
+        }
       });
-
-      if (response.table_number) {
-        setTableNumber(response.table_number);
+      const result = outcome.finished;
+      if (!result) throw new ApiException({ code: "NETWORK_ERROR", message: t("انقطع الاتصال قبل ما يكمل الرد، جرّب مرة ثانية.", "The connection dropped before the reply finished. Please try again.") }, 0);
+      if (result.table_number) {
+        setTableNumber(result.table_number);
       }
-
-
-      // The reply appears word by word, as if being written.
-      const id = `ast-${Date.now()}`;
-      const words = response.response.split(/(\s+)/);
-      let shown = 1;
-      const timer = window.setInterval(() => {
-        shown += 2;
-        const text = words.slice(0, shown).join("");
-        setMessages((prev) => prev.map((message) => (message.id === id ? { ...message, text } : message)));
-        if (shown >= words.length) window.clearInterval(timer);
-      }, 35);
-      const assistantMsg: ChatMessage = {
-        id,
-        sender: "assistant",
-        text: words[0] ?? "",
-        draft: response.draft,
-        action: response.action,
-        table_number: response.table_number,
-        timestamp: timeNow(),
+      const reply: Partial<ChatMessage> = {
+        text: result.response, draft: result.draft, action: result.action, done: result.done, table_number: result.table_number,
+        streaming: false,
       };
-
-      setMessages((prev) => [...prev, assistantMsg]);
-      serverTailRef.current = response.response;
+      if (replyShown) {
+        changeReply((message) => ({ ...message, ...reply }));
+      } else {
+        setMessages((prev) => [...prev, { id: replyId, sender: "assistant", writing: true, timestamp: timeNow(), ...reply } as ChatMessage]);
+      }
+      serverTailRef.current = result.response;
       // The assistant may have changed the basket: the orders page and menu badge follow.
       announceDraftChanged();
     } catch (err: unknown) {
@@ -462,7 +486,7 @@ export function AssistantChatPanel({ open = true, onClose, onHeaderPointerDown }
         ? (lang === "en" ? String(err.details?.message_en ?? err.message) : err.message)
         : t("حدث خطأ في الاتصال، يرجى المحاولة مرة أخرى.", "Connection problem. Please try again.");
       setMessages((prev) => [
-        ...prev,
+        ...prev.filter((message) => message.id !== replyId),
         {
           id: `err-${Date.now()}`,
           sender: "error",
@@ -505,7 +529,7 @@ export function AssistantChatPanel({ open = true, onClose, onHeaderPointerDown }
         setMessages((prev) => [
           ...prev,
           { id: `user-${Date.now()}`, sender: "user", text: t("✅ (تأكيد الطلب بالزر)", "✅ (confirmed with the button)"), timestamp: timeNow() },
-          { id: `ast-${Date.now()}`, sender: "assistant", text: result.response ?? "", action: result.action ?? undefined, timestamp: timeNow() },
+          { id: `ast-${Date.now()}`, sender: "assistant", text: result.response ?? "", action: result.action ?? undefined, done: result.done, timestamp: timeNow() },
         ]);
         return;
       }
@@ -575,7 +599,7 @@ export function AssistantChatPanel({ open = true, onClose, onHeaderPointerDown }
         setMessages((prev) => [
           ...prev,
           { id: `user-${Date.now()}`, sender: "user", text: t("✅ (تأكيد التعديل بالزر)", "✅ (confirmed with the button)"), timestamp: timeNow() },
-          { id: `ast-${Date.now()}`, sender: "assistant", text: result.response ?? "", action: result.action ?? undefined, timestamp: timeNow() },
+          { id: `ast-${Date.now()}`, sender: "assistant", text: result.response ?? "", action: result.action ?? undefined, done: result.done, timestamp: timeNow() },
         ]);
         return;
       }
@@ -603,11 +627,31 @@ export function AssistantChatPanel({ open = true, onClose, onHeaderPointerDown }
   };
 
   const changeLine = (change: AmendmentChange) => {
-    const name = inLang(change.name_ar, change.name_en);
-    if (change.type === "added") return `+ ${change.quantity_after} × ${name}`;
-    if (change.type === "removed") return t(`− حذف ${name}`, `− Remove ${name}`);
-    return `${name}: ${change.quantity_before} → ${change.quantity_after}`;
+    const unit = unitLabel(change, lang);
+    const dish = inLang(change.name_ar, change.name_en);
+    const name = dish + (unit ? ` · ${unit}` : "");
+    const note = change.note ? ` («${change.note}»)` : "";
+    if (change.type === "added") return `+ ${change.quantity_after} × ${name}${note}`;
+    if (change.type === "removed") return t(`− حذف ${name}${note}`, `− Remove ${name}${note}`);
+    if (change.type === "note_changed") {
+      return change.note_after
+        ? t(`${change.quantity_after} × ${name}: صار «${change.note_after}»`, `${change.quantity_after} × ${name}: now «${change.note_after}»`)
+        : t(`${change.quantity_after} × ${name}: بدون ملاحظة`, `${change.quantity_after} × ${name}: no note`);
+    }
+    if (change.type === "unit_changed") {
+      const before = inLang(change.unit_before_display_ar ?? change.unit_before ?? "", change.unit_before_display_en ?? undefined);
+      return t(`${change.quantity_after} × ${dish}: ${before} ← ${unit ?? ""}`, `${change.quantity_after} × ${dish}: ${before} → ${unit ?? ""}`);
+    }
+    // The arrow follows the reading direction (as on the staff screen).
+    return t(`${name}: ${change.quantity_before} ← ${change.quantity_after}`, `${name}: ${change.quantity_before} → ${change.quantity_after}`);
   };
+  // More of a dish reads like an added dish (green), less like a removed one (red).
+  const changeTone = (change: AmendmentChange) =>
+    change.type === "removed" || (change.type === "quantity_changed" && change.quantity_after < change.quantity_before)
+      ? "text-danger-ink"
+      : change.type === "added" || (change.type === "quantity_changed" && change.quantity_after > change.quantity_before)
+        ? "text-success-ink"
+        : "text-ink-2";
 
   const handleClearHistory = async () => {
     if (clearing) return;
@@ -868,11 +912,15 @@ export function AssistantChatPanel({ open = true, onClose, onHeaderPointerDown }
                   }`}
                 >
                   {isError && <CircleAlert className="mt-0.5 size-4 shrink-0" aria-hidden="true" />}
-                  {/* Each line reads in its own direction: Arabic right to left, English left to right. */}
-                  <span dir="auto" className="block text-start [unicode-bidi:plaintext]">{msg.text}</span>
+                  {/* Each message reads in its own direction (an English question in the Arabic chat). */}
+                  {msg.writing ? (
+                    <WritingText text={msg.text} streaming={!!msg.streaming} onGrow={keepLatestInView} onDone={() => replyWritten(msg.id)} />
+                  ) : (
+                    <span dir="auto">{msg.text}</span>
+                  )}
 
                   {/* The order summary, with its confirm button */}
-                  {msg.action?.type === "AWAITING_ORDER_CONFIRMATION" && msg.draft && msg.draft.items && msg.draft.items.length > 0 && (
+                  {!msg.writing && msg.action?.type === "AWAITING_ORDER_CONFIRMATION" && msg.draft && msg.draft.items && msg.draft.items.length > 0 && (
                     <div className="mt-3 overflow-hidden rounded-2xl border border-line bg-surface-2 text-ink">
                       <div className="flex items-center justify-between gap-2 border-b border-line px-3.5 py-2.5">
                         <span className="flex items-center gap-1.5 text-[0.8125rem] font-bold">
@@ -884,7 +932,10 @@ export function AssistantChatPanel({ open = true, onClose, onHeaderPointerDown }
                       <ul className="space-y-1.5 px-3.5 py-2.5">
                         {msg.draft.items.map((it, i) => (
                           <li key={i} className="flex items-baseline justify-between gap-3 text-[0.8125rem]">
-                            <span className="text-ink-2"><span className="font-bold tabular-nums text-ink">{it.quantity}×</span> {inLang(it.name_ar, it.name_en)}</span>
+                            <span className="text-ink-2">
+                              <span className="font-bold tabular-nums text-ink">{it.quantity}×</span> {inLang(it.name_ar, it.name_en)}
+                              <UnitTag label={unitLabel(it, lang)} className="ms-1.5" />
+                            </span>
                             <span className="shrink-0 tabular-nums text-muted">{inLang(it.line_total_display_ar, it.line_total_display_en)}</span>
                           </li>
                         ))}
@@ -911,7 +962,7 @@ export function AssistantChatPanel({ open = true, onClose, onHeaderPointerDown }
                   )}
 
                   {/* A change to an order already sent, waiting for the guest's yes */}
-                  {msg.action?.type === "AWAITING_AMENDMENT_CONFIRMATION" && msg.action.amendment && (
+                  {!msg.writing && msg.action?.type === "AWAITING_AMENDMENT_CONFIRMATION" && msg.action.amendment && (
                     <div className="mt-3 overflow-hidden rounded-2xl border border-line bg-surface-2 text-ink">
                       <div className="flex items-center justify-between gap-2 border-b border-line px-3.5 py-2.5">
                         <span className="flex items-center gap-1.5 text-[0.8125rem] font-bold">
@@ -922,7 +973,7 @@ export function AssistantChatPanel({ open = true, onClose, onHeaderPointerDown }
                       </div>
                       <ul className="space-y-1 px-3.5 py-2.5">
                         {msg.action.amendment.changes.map((change, i) => (
-                          <li key={i} className={`text-[0.8125rem] ${change.type === "removed" ? "text-danger-ink" : change.type === "added" ? "text-success-ink" : "text-ink-2"}`}>{changeLine(change)}</li>
+                          <li key={i} className={`text-[0.8125rem] ${changeTone(change)}`}>{changeLine(change)}</li>
                         ))}
                       </ul>
                       {msg.action.amendment.kitchen_already_preparing && (
@@ -946,14 +997,37 @@ export function AssistantChatPanel({ open = true, onClose, onHeaderPointerDown }
                     </div>
                   )}
 
-                  {msg.action?.type === "ORDER_AMENDED" && (
+                  {/* A change already made to a sent order: what changed and the new total (nothing to confirm) */}
+                  {!msg.writing && msg.action?.type === "ORDER_AMENDED" && (msg.action.amendment ? (
+                    <div className="mt-3 overflow-hidden rounded-2xl border border-line bg-surface-2 text-ink">
+                      <div className="flex items-center justify-between gap-2 border-b border-line px-3.5 py-2.5">
+                        <span className="flex items-center gap-1.5 text-[0.8125rem] font-bold">
+                          <Pencil className="size-4 text-info" aria-hidden="true" />
+                          {msg.action.amendment.cancels_order
+                            ? t(`تم إلغاء الطلب ${msg.action.amendment.order_number}`, `Order ${msg.action.amendment.order_number} cancelled`)
+                            : t(`تم تعديل الطلب ${msg.action.amendment.order_number}`, `Order ${msg.action.amendment.order_number} updated`)}
+                        </span>
+                        {!msg.action.amendment.cancels_order && (
+                          <span className="shrink-0 whitespace-nowrap text-[0.9375rem] font-bold tabular-nums text-brand">{inLang(msg.action.amendment.total_after_display_ar, msg.action.amendment.total_after_display_en)}</span>
+                        )}
+                      </div>
+                      <ul className="space-y-1 px-3.5 py-2.5">
+                        {msg.action.amendment.changes.map((change, i) => (
+                          <li key={i} className={`text-[0.8125rem] ${changeTone(change)}`}>{changeLine(change)}</li>
+                        ))}
+                      </ul>
+                      {msg.action.amendment.kitchen_already_preparing && (
+                        <p className="mx-3.5 mb-2.5 rounded-xl bg-warning-soft px-3 py-2 text-xs font-semibold text-warning-ink">{t("المطبخ كان بادئ بالتحضير، ووصل تنبيه بالتعديل للموظفين فوراً.", "The kitchen had already started; staff were alerted to the change right away.")}</p>
+                      )}
+                    </div>
+                  ) : (
                     <div className="mt-2.5 flex items-center gap-1.5 rounded-xl bg-info-soft px-3 py-2 text-xs font-bold text-info-ink">
                       <Pencil className="size-3.5" aria-hidden="true" />
                       <span>{t("تم تعديل الطلب", "Order updated")}</span>
                     </div>
-                  )}
+                  ))}
 
-                  {msg.action?.type === "ORDER_SUBMITTED" && (
+                  {!msg.writing && msg.action?.type === "ORDER_SUBMITTED" && (
                     <motion.div
                       initial={{ opacity: 0, y: 8 }}
                       animate={{ opacity: 1, y: 0 }}
@@ -989,6 +1063,21 @@ export function AssistantChatPanel({ open = true, onClose, onHeaderPointerDown }
                       </Link>
                     </motion.div>
                   )}
+
+                  {/* What the reply really did, as the server recorded it */}
+                  {!msg.writing && !isUser && (() => {
+                    const badges = doneBadges(msg.done, lang, {
+                      sent: msg.action?.type === "ORDER_SUBMITTED" ? msg.action.order_number : undefined,
+                      changed: msg.action?.type === "ORDER_AMENDED" ? msg.action.amendment?.order_number ?? msg.action.order_number : undefined,
+                    });
+                    return badges.length > 0 && (
+                      <div className="mt-2.5 flex flex-wrap gap-1.5">
+                        {badges.map((badge) => (
+                          <span key={badge} className="rounded-full bg-success-soft px-2.5 py-1 text-xs font-bold text-success-ink">{badge}</span>
+                        ))}
+                      </div>
+                    );
+                  })()}
                 </div>
                 {msg.timestamp && <span className="mt-1 px-1.5 text-[0.6875rem] text-subtle">{msg.timestamp}</span>}
               </div>
@@ -997,7 +1086,7 @@ export function AssistantChatPanel({ open = true, onClose, onHeaderPointerDown }
         })}
 
         <AnimatePresence>
-          {(loading || (call.active && call.state === "thinking")) && (
+          {((loading && !messages.some((message) => message.streaming)) || (call.active && call.state === "thinking")) && (
             <motion.div
               key="typing"
               initial={{ opacity: 0, y: 10 }}
@@ -1007,7 +1096,7 @@ export function AssistantChatPanel({ open = true, onClose, onHeaderPointerDown }
               className="flex items-end gap-2"
             >
               <Image src="/brand/jubran-emblem.webp" alt="" width={56} height={56} className="size-7 rounded-full bg-brand object-cover" />
-              <ThinkingBubble />
+              <AssistantStep step={loading ? step : "thinking"} />
             </motion.div>
           )}
         </AnimatePresence>
@@ -1081,11 +1170,11 @@ export function AssistantChatPanel({ open = true, onClose, onHeaderPointerDown }
               />
 
               <AnimatePresence mode="popLayout" initial={false}>
-                {inputMessage.trim() ? (
+                {inputMessage.trim() || !VOICE_CALL_BUTTON_ENABLED ? (
                   <motion.button
                     key="send"
                     type="submit"
-                    disabled={loading}
+                    disabled={loading || !inputMessage.trim()}
                     // Keeps the typing field (and the phone's keyboard) up after sending.
                     onPointerDown={(event) => event.preventDefault()}
                     initial={{ scale: 0.5, opacity: 0 }}

@@ -3,7 +3,7 @@
 - Waiting for the restaurant: the change applies quietly.
 - Being prepared: it applies and stays highlighted for staff until acknowledged.
 - Ready or served: locked (more dishes become a new order).
-- Only the guest who sent the order can change it.
+- Only the guest who sent the order sees it and can change it.
 """
 import pytest
 from sqlalchemy import select, update
@@ -42,7 +42,7 @@ async def test_pending_order_changes_apply_quietly(client, db_session, new_brows
     order, products = await place_order(guest, [("حمص", 1), ("شاي", 2)])
 
     view = await my_order(guest, order["order_id"])
-    assert view["mine"] and view["editable"] and view["locked_reason"] is None
+    assert view["editable"] and view["locked_reason"] is None
     tea = next(item for item in view["items"] if item["name_ar"] == "شاي")
     hummus = next(item for item in view["items"] if item["name_ar"] == "حمص")
 
@@ -118,18 +118,24 @@ async def test_ready_and_served_orders_are_locked(client, db_session, new_browse
 
 
 @pytest.mark.asyncio
-async def test_only_the_guest_who_ordered_can_change_it(client, db_session, new_browser):
+async def test_only_the_guest_who_ordered_sees_and_changes_it(client, db_session, new_browser):
     await seed_database(db_session)
     first, second = client, new_browser()
     await start_visit(first, db_session, "T8")
     order, products = await place_order(first, [("فتوش", 1)])
     await start_visit(second, db_session, "T8")  # a friend joins the same table
 
-    seen_by_friend = await my_order(second, order["order_id"])
-    assert seen_by_friend["mine"] is False and seen_by_friend["editable"] is False
+    # The friend's orders page doesn't list it, and even its ids don't let them change it.
+    assert (await second.get("/api/v1/orders")).json() == []
+    item_id = (await my_order(first, order["order_id"]))["items"][0]["item_id"]
     refused = await second.post(f"/api/v1/orders/{order['order_id']}/amend", json={
-        "operations": [{"op": "remove", "item_id": seen_by_friend["items"][0]["item_id"]}]})
+        "operations": [{"op": "remove", "item_id": item_id}]})
     assert refused.status_code == 403 and refused.json()["detail"]["error"]["code"] == "ORDER_NOT_YOURS"
+
+    # Once both have ordered, each still sees only their own order.
+    friend_order, _ = await place_order(second, [("شاي", 1)])
+    assert [o["order_id"] for o in (await second.get("/api/v1/orders")).json()] == [friend_order["order_id"]]
+    assert [o["order_id"] for o in (await first.get("/api/v1/orders")).json()] == [order["order_id"]]
 
 
 @pytest.mark.asyncio

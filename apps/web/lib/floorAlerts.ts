@@ -2,11 +2,12 @@
 
 /**
  * What needs a sound on the floor screen: orders waiting for approval, orders a
- * guest changed while the kitchen was preparing them, and open guest calls.
+ * guest changed while the kitchen was preparing them, open guest calls, and a guest
+ * adding to their complaint (one complaint per guest holds each thing they add).
  */
 export interface AlertSource {
   active_orders: Array<{ order_id: string; status: string; amendments?: Array<{ id: string; needs_attention: boolean }> }>;
-  service_queue: Array<{ id: string; kind: string; status: string }>;
+  service_queue: Array<{ id: string; kind: string; status: string; message?: string | null }>;
 }
 
 export interface AlertKeys {
@@ -21,7 +22,9 @@ export function alertKeys(snapshot: AlertSource): AlertKeys {
       ...snapshot.active_orders.flatMap((order) => (order.amendments ?? [])
         .filter((change) => change.needs_attention).map((change) => `change:${change.id}`)),
     ]),
-    calls: new Set(snapshot.service_queue.filter((item) => item.status === "OPEN").map((item) => `${item.kind}:${item.id}`)),
+    calls: new Set(snapshot.service_queue
+      .filter((item) => item.status === "OPEN" || (item.kind === "COMPLAINT" && item.status === "IN_PROGRESS"))
+      .map((item) => (item.kind === "COMPLAINT" ? `${item.kind}:${item.id}:${item.message?.length ?? 0}` : `${item.kind}:${item.id}`))),
   };
 }
 

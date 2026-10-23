@@ -46,7 +46,8 @@ async def test_guests_never_see_the_staff_closure_note(client, db_session, new_b
     assert not any(customer_id in session.closure_note for customer_id in customer_ids)
 
     # Everything a guest can be shown about the visit.
-    orders = await OrderingService.get_orders_for_customer(db_session, visit["table_session_id"])
+    orders = await OrderingService.get_orders_for_customer(db_session, visit["table_session_id"],
+                                                           visit["customer_session_id"])
     services = await CustomerServiceManager.get_service_requests_for_customer(
         db_session, visit["table_session_id"], visit["customer_session_id"])
     tool_view = await AssistantToolExecutor(db_session, visit["customer_session_id"], visit["table_session_id"],

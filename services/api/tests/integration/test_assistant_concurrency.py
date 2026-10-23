@@ -58,7 +58,7 @@ async def test_no_transaction_or_lock_is_held_while_the_model_thinks(client, db_
     tea = (await db_session.execute(select(ProductModel).where(ProductModel.name_ar == "شاي"))).scalar_one()
     replies = iter([
         model_response(model_call("search_knowledge", query="شاي", source_types=["product"])),
-        model_response(model_call("update_draft_order", operations=[{"op": "add", "product_id": tea.id, "quantity": 1}])),
+        model_response(model_call("update_draft_order", operations=[{"op": "add", "product_id": tea.id, "quantity": 1, "guest_gave_quantity": True}])),
         model_response(model_call("get_current_draft")),
         model_response(text="أضفت الشاي."),
     ])
@@ -71,7 +71,7 @@ async def test_no_transaction_or_lock_is_held_while_the_model_thinks(client, db_
 
     monkeypatch.setattr(settings, "GEMINI_API_KEY", "offline-test-key")
     monkeypatch.setattr(AssistantService, "_create_chat", classmethod(lambda cls, *args, **kwargs: WatchingChat()))
-    response = await client.post("/api/v1/assistant/chat", json={"message": "بدي شاي"})
+    response = await client.post("/api/v1/assistant/chat", json={"message": "بدي شاي واحد"})
     assert response.status_code == 200, response.text
     assert response.json()["draft"]["item_count"] == 1
     assert open_during_model_calls == [False, False, False, False]

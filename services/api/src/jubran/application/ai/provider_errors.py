@@ -32,7 +32,9 @@ def classify_provider_failure(error: Exception, component: str) -> str:
     status = _status_code(error)
     if any(term in details for term in ("invalid api key", "api key not valid", "unauthorized", "invalid_api_key")):
         return f"{prefix}_AUTH_FAILED"
-    if status == 429:
+    if "credit balance" in details:  # Anthropic: the account has run out of credit
+        return f"{prefix}_QUOTA_EXCEEDED"
+    if status in (429, 529):  # 529: Anthropic is overloaded
         if any(term in details for term in ("quota", "insufficient_quota", "billing_hard_limit")):
             return f"{prefix}_QUOTA_EXCEEDED"
         return f"{prefix}_RATE_LIMITED"

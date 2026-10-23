@@ -45,6 +45,9 @@ async def test_an_empty_complaint_is_refused_even_from_the_assistant(client, db_
 @pytest.mark.asyncio
 @pytest.mark.parametrize("link,accepted", [
     ("/images/hummus.png", True), ("", True),
+    # A photo stored for a dish: the link the dish already has, sent back by the edit form.
+    ("/api/v1/menu/products/0f89e894-e39f-482c-b232-0bf552d86120/images/d4c834ef-f119-4dc1-9fae-a3e6902c7662", True),
+    ("/api/v1/menu/products/../../admin/images/x", False),
     ("https://tracker.example.com/pixel.gif", False), ("//tracker.example.com/p.png", False),
     ("/images/page.html", False), ("javascript:alert(1)", False),
 ])

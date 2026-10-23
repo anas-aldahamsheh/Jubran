@@ -15,7 +15,7 @@ async def summary_shown(client, db_session, monkeypatch, *later_turns):
     tea = (await db_session.execute(select(ProductModel).where(ProductModel.name_ar == "شاي"))).scalar_one()
     script_model(monkeypatch, [
         model_response(model_call("search_knowledge", query="شاي", source_types=["product"])),
-        model_response(model_call("update_draft_order", operations=[{"op": "add", "product_id": tea.id, "quantity": 2}])),
+        model_response(model_call("update_draft_order", operations=[{"op": "add", "product_id": tea.id, "quantity": 2, "guest_gave_quantity": True}])),
         *summary_calls(),
         model_response(text="هذا ملخص طلبك. هل تؤكد؟")], *later_turns)
     shown = await client.post("/api/v1/assistant/chat", json={"message": "بدي 2 شاي وخلص"})

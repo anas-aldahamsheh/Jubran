@@ -133,3 +133,65 @@ async def test_old_gemini_live_voice_settings_are_removed(engine):
     async with sessions(engine)() as db:
         left = (await db.execute(select(AiModelConfigModel.purpose, AiModelConfigModel.provider))).all()
     assert left == [("chat", "gemini")]
+
+
+@pytest.mark.asyncio
+async def test_serving_units_reach_a_database_one_migration_behind_without_changing_its_data(engine):
+    await migrate_database(engine)
+    async with sessions(engine)() as db:
+        await seed_database(db)
+    async with engine.begin() as connection:  # as if the database were one migration behind
+        for table, column in (("products", "units_json"), ("draft_items", "unit"), ("order_items", "unit")):
+            await connection.execute(text(f"ALTER TABLE {table} DROP COLUMN {column}"))
+        await connection.execute(text("UPDATE alembic_version SET version_num = '0005_live_voice_gpt_live'"))
+        dishes = (await connection.execute(text("SELECT count(*) FROM products"))).scalar_one()
+    assert await migrate_database(engine) == "versioned"
+    assert await version(engine) == HEAD
+    assert await schema_differences(engine) == []
+    async with engine.connect() as connection:
+        kept = (await connection.execute(text("SELECT count(*), count(units_json) FROM products"))).one()
+    assert tuple(kept) == (dishes, 0)  # every dish kept, each on its automatic unit
+
+
+async def complaint_message_length(engine):
+    def length(sync_connection):
+        from sqlalchemy import inspect
+        column = next(c for c in inspect(sync_connection).get_columns("complaints") if c["name"] == "message")
+        return getattr(column["type"], "length", None)
+    async with engine.connect() as connection:
+        return await connection.run_sync(length)
+
+
+@pytest.mark.asyncio
+async def test_complaints_lose_their_length_limit_without_changing_their_data(engine):
+    from datetime import datetime, timedelta, timezone
+    from jubran.infrastructure.db.models import ComplaintModel, CustomerSessionModel, TableSessionModel
+    await migrate_database(engine)
+    async with sessions(engine)() as db:
+        await seed_database(db)
+        table = (await db.execute(select(PhysicalTableModel).where(PhysicalTableModel.table_number == "T1"))).scalar_one()
+        visit = TableSessionModel(physical_table_id=table.id)
+        db.add(visit)
+        await db.flush()
+        guest = CustomerSessionModel(table_session_id=visit.id, token_hash="0" * 64,
+                                     expires_at=datetime.now(timezone.utc) + timedelta(hours=1))
+        db.add(guest)
+        await db.flush()
+        db.add(ComplaintModel(table_session_id=visit.id, customer_session_id=guest.id, message="الشاي بارد"))
+        await db.commit()
+    async with engine.begin() as connection:  # as if the database were one migration behind
+        if connection.dialect.name == "postgresql":
+            await connection.execute(text("ALTER TABLE complaints ALTER COLUMN message TYPE VARCHAR(500)"))
+        await connection.execute(text("UPDATE alembic_version SET version_num = '0006_serving_units'"))
+    assert await migrate_database(engine) == "versioned"
+    assert await version(engine) == HEAD
+    if engine.dialect.name == "postgresql":  # SQLite never enforced the limit: nothing changes there
+        assert await complaint_message_length(engine) is None
+    lines = "الشاي بارد" + "\n[14:05] وما حدا إجا" * 60  # one complaint holds all of a guest's lines
+    async with sessions(engine)() as db:
+        complaint = (await db.execute(select(ComplaintModel))).scalar_one()
+        assert complaint.message == "الشاي بارد"
+        complaint.message = lines
+        await db.commit()
+    async with engine.connect() as connection:
+        assert (await connection.execute(text("SELECT message FROM complaints"))).scalar_one() == lines

@@ -35,9 +35,9 @@ class ScriptedChat:
 
 
 def summary_calls():
-    """The model finishing an order: a suggestion considered, nothing fits, then the summary."""
-    return [model_response(model_call("recommend_products")),
-            model_response(model_call("prepare_order_confirmation", customer_finished=True,
+    """The model finishing an order: the suggestion ideas came with the dishes added, the guest
+    is done, so the summary."""
+    return [model_response(model_call("prepare_order_confirmation", customer_finished=True,
                                       no_fitting_suggestion=True))]
 
 
@@ -45,7 +45,7 @@ def script_model(monkeypatch, *turns):
     monkeypatch.setattr(settings, "GEMINI_API_KEY", "offline-test-key")
     chats = [ScriptedChat(turn) for turn in turns]
     iterator = iter(chats)
-    monkeypatch.setattr(AssistantService, "_create_chat", classmethod(lambda cls, history, table, config, draft, language=None: next(iterator)))
+    monkeypatch.setattr(AssistantService, "_create_chat", classmethod(lambda cls, history, table, config, draft, language=None, menu=None: next(iterator)))
     return chats
 
 
@@ -79,7 +79,7 @@ async def test_order_needs_prior_summary_and_server_owned_token(client, db_sessi
         [model_response(model_call("submit_order", confirmed_summary=True, guest_words="أرسل الطلب")),
          model_response(text="التأكيد مطلوب أولاً.")],
         [model_response(model_call("search_knowledge", query=product.name_ar, source_types=["product"])),
-         model_response(model_call("update_draft_order", operations=[{"op": "add", "product_id": product.id, "quantity": 2}])),
+         model_response(model_call("update_draft_order", operations=[{"op": "add", "product_id": product.id, "quantity": 2, "guest_gave_quantity": True}])),
          *summary_calls(),
          model_response(text="هذه سلة الطلب ومجموعها. هل تؤكد إرسالها؟")],
         [model_response(model_call("submit_order", confirmed_summary=True, guest_words="نعم، أكد")),
@@ -121,23 +121,23 @@ async def test_unconfigured_model_returns_service_error(client, db_session):
 
 
 @pytest.mark.asyncio
-async def test_unverified_product_and_same_turn_submit_are_blocked(client, db_session, monkeypatch):
+async def test_a_dish_not_on_the_menu_and_same_turn_submit_are_blocked(client, db_session, monkeypatch):
     await seat_customer(client, db_session)
     product = (await db_session.execute(select(ProductModel).where(ProductModel.is_available.is_(True)))).scalars().first()
     script_model(monkeypatch,
-        [model_response(model_call("update_draft_order", operations=[{"op": "add", "product_id": product.id, "quantity": 1}])),
+        [model_response(model_call("update_draft_order", operations=[{"op": "add", "product_id": "made-up-dish", "quantity": 1, "guest_gave_quantity": True}])),
          model_response(text="يجب البحث عن الصنف أولاً.")],
-        [model_response(model_call("search_knowledge", query=product.name_ar, source_types=["product"])),
-         model_response(model_call("update_draft_order", operations=[{"op": "add", "product_id": product.id, "quantity": 1}])),
+        # A dish on the menu needs no search: the whole menu is in the instructions.
+        [model_response(model_call("update_draft_order", operations=[{"op": "add", "product_id": product.id, "quantity": 1, "guest_gave_quantity": True}])),
          *summary_calls(),
          model_response(model_call("submit_order", confirmed_summary=True)),
          model_response(text="هذه السلة؛ أحتاج تأكيدك في رسالة لاحقة.")],
     )
-    blocked = await client.post("/api/v1/assistant/chat", json={"message": "أضف الصنف"})
+    blocked = await client.post("/api/v1/assistant/chat", json={"message": "أضف واحد من الصنف"})
     assert blocked.json()["tool_calls"][0]["result"]["error_code"] == "LOOKUP_REQUIRED"
     assert blocked.json()["draft"] is None
 
-    prepared = await client.post("/api/v1/assistant/chat", json={"message": "أضف الصنف وأرسل"})
+    prepared = await client.post("/api/v1/assistant/chat", json={"message": "أضف واحد من الصنف وأرسل"})
     assert prepared.status_code == 200
     assert prepared.json()["tool_calls"][-1]["result"]["error_code"] == "PRIOR_CONFIRMATION_REQUIRED"
     assert prepared.json()["action"]["type"] == "AWAITING_ORDER_CONFIRMATION"
@@ -150,7 +150,7 @@ async def test_price_change_requires_fresh_confirmation_before_submit(client, db
     original_price = product.price_minor
     script_model(monkeypatch,
         [model_response(model_call("search_knowledge", query=product.name_ar, source_types=["product"])),
-         model_response(model_call("update_draft_order", operations=[{"op": "add", "product_id": product.id, "quantity": 1}])),
+         model_response(model_call("update_draft_order", operations=[{"op": "add", "product_id": product.id, "quantity": 1, "guest_gave_quantity": True}])),
          *summary_calls(),
          model_response(text="هذا ملخص الطلب. هل تؤكد الإرسال؟")],
         [model_response(model_call("submit_order", confirmed_summary=True, guest_words="نعم")),
@@ -159,7 +159,7 @@ async def test_price_change_requires_fresh_confirmation_before_submit(client, db
          model_response(text="تم إرسال الطلب.")],
     )
 
-    prepared = await client.post("/api/v1/assistant/chat", json={"message": f"أضف {product.name_ar} وخلص"})
+    prepared = await client.post("/api/v1/assistant/chat", json={"message": f"أضف واحد {product.name_ar} وخلص"})
     assert prepared.json()["action"]["type"] == "AWAITING_ORDER_CONFIRMATION"
 
     product.price_minor = original_price + 300
@@ -181,14 +181,14 @@ async def test_unavailable_product_blocks_previously_confirmed_order(client, db_
     product = (await db_session.execute(select(ProductModel).where(ProductModel.is_available.is_(True)))).scalars().first()
     script_model(monkeypatch,
         [model_response(model_call("search_knowledge", query=product.name_ar, source_types=["product"])),
-         model_response(model_call("update_draft_order", operations=[{"op": "add", "product_id": product.id, "quantity": 1}])),
+         model_response(model_call("update_draft_order", operations=[{"op": "add", "product_id": product.id, "quantity": 1, "guest_gave_quantity": True}])),
          *summary_calls(),
          model_response(text="هل تؤكد إرسال هذا الطلب؟")],
         [model_response(model_call("submit_order", confirmed_summary=True, guest_words="نعم")),
          model_response(text="الصنف أصبح غير متوفر، لذلك لم أرسل الطلب.")],
     )
 
-    prepared = await client.post("/api/v1/assistant/chat", json={"message": f"أضف {product.name_ar} وخلص"})
+    prepared = await client.post("/api/v1/assistant/chat", json={"message": f"أضف واحد {product.name_ar} وخلص"})
     assert prepared.json()["action"]["type"] == "AWAITING_ORDER_CONFIRMATION"
     product.is_available = False
     await db_session.commit()
@@ -207,11 +207,11 @@ async def test_model_selects_clear_item_and_asks_about_ambiguous_item(client, db
     script_model(monkeypatch, [
         model_response(model_call("search_knowledge", query="وجبة حمص وفلافل", source_types=["product"])),
         model_response(model_call("update_draft_order", operations=[
-            {"op": "add", "product_id": product.id, "quantity": 1},
+            {"op": "add", "product_id": product.id, "quantity": 1, "guest_gave_quantity": True},
         ])),
         model_response(text="أضفت الحمص. هل تقصد فلافل أم كبة حماتي؟"),
     ])
-    response = await client.post("/api/v1/assistant/chat", json={"message": "بدي حمص وفلافل"})
+    response = await client.post("/api/v1/assistant/chat", json={"message": "بدي صحن حمص وفلافل"})
     assert response.status_code == 200
     assert [item["name_ar"] for item in response.json()["draft"]["items"]] == ["حمص"]
     assert response.json()["tool_calls"][-1]["result"]["success"] is True
@@ -234,12 +234,12 @@ async def test_model_can_decline_confirmation_after_interpreting_context(client,
     script_model(monkeypatch,
         [model_response(model_call("search_knowledge", query=product.name_ar, source_types=["product"])),
          model_response(model_call("update_draft_order", operations=[
-             {"op": "add", "product_id": product.id, "quantity": 1}
+             {"op": "add", "product_id": product.id, "quantity": 1, "guest_gave_quantity": True}
          ])), model_response(text="أضفت الشاي. هل تريد شيئًا آخر؟")],
         [model_response(model_call("prepare_order_confirmation", customer_finished=False)),
          model_response(text="أخبرني ماذا تريد أن تضيف.")],
     )
-    await client.post("/api/v1/assistant/chat", json={"message": "بدي شاي"})
+    await client.post("/api/v1/assistant/chat", json={"message": "بدي شاي واحد"})
     response = await client.post("/api/v1/assistant/chat", json={"message": "نعم"})
     assert response.status_code == 200
     assert response.json()["tool_calls"][0]["result"]["error_code"] == "CUSTOMER_STILL_ORDERING"
@@ -270,7 +270,7 @@ def script_noted_model(monkeypatch, responses):
     monkeypatch.setattr(settings, "GEMINI_API_KEY", "offline-test-key")
     chat = NotedChat(responses)
     monkeypatch.setattr(AssistantService, "_create_chat",
-                        classmethod(lambda cls, history, table, config, draft, language=None: chat))
+                        classmethod(lambda cls, history, table, config, draft, language=None, menu=None: chat))
     return chat
 
 

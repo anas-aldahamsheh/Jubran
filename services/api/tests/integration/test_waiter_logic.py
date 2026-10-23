@@ -9,6 +9,7 @@ import httpx
 import pytest
 from sqlalchemy import select
 
+from jubran.application.ai import menu_memory
 from jubran.application.ai.agent_service import AssistantService
 from jubran.application.ai.model_clients import OpenAIAgentChat
 from jubran.application.ai.model_config_service import RuntimeModelConfig
@@ -45,52 +46,99 @@ def debug_mode(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_changing_a_sent_order_needs_the_guests_yes_in_a_later_message(client, db_session, monkeypatch, debug_mode):
+async def test_a_clear_change_to_a_sent_order_is_made_at_once(client, db_session, monkeypatch, debug_mode):
     await seed_database(db_session)
     await start_visit(client, db_session, "T4")
     order = await send_order(client, db_session, "شاي", 1)
     tea_item = (await client.get("/api/v1/orders")).json()[0]["items"][0]["item_id"]
     change = {"order_id": order["order_id"],
-              "operations": [{"op": "set_quantity", "item_id": tea_item, "quantity": 3}]}
+              "operations": [{"op": "update", "item_id": tea_item, "quantity": 3}]}
     chats = script_model(monkeypatch,
-        [model_response(model_call("prepare_order_amendment", **change)),
-         model_response(model_call("confirm_order_amendment", confirmed=True)),  # same turn: refused
-         model_response(text="بصير عندك 3 شاي بالطلب، المجموع الجديد 4.65 د.أ. بأكّد التعديل؟")],
-        [model_response(model_call("confirm_order_amendment", confirmed=True, guest_words="آه أكد")),
-         model_response(text="تم.")],
+        [model_response(model_call("change_sent_order", **change, guest_words="آه أكد")),  # not in the message
+         model_response(model_call("change_sent_order", **change, guest_words="خلي الشاي 3")),
+         model_response(model_call("change_sent_order", **change, guest_words="خلي الشاي 3")),  # again: refused
+         model_response(text="تم، صار عندك 3 كاسات شاي بالطلب.")],
+        [model_response(text="العفو.")],
     )
 
-    shown = await chat(client, "خلي الشاي 3 بالطلب اللي بعتته")
-    assert shown["action"]["type"] == "AWAITING_AMENDMENT_CONFIRMATION"
-    assert shown["tool_calls"][0]["result"]["amendment"]["changes"][0]["quantity_after"] == 3
-    assert shown["tool_calls"][1]["result"]["error_code"] == "PRIOR_CONFIRMATION_REQUIRED"
-    assert (await client.get("/api/v1/orders")).json()[0]["items"][0]["quantity"] == 1
-    # The next turn's facts include the change waiting for a yes.
-    confirmed = await chat(client, "آه أكد")
-    assert "order_change_awaiting_confirmation" in chats[1].context
-    assert confirmed["action"]["type"] == "ORDER_AMENDED"
+    changed = await chat(client, "خلي الشاي 3 بالطلب اللي بعتته")
+    assert [call["result"].get("error_code") for call in changed["tool_calls"]] == [
+        "CHANGE_WORDS_REQUIRED", None, "DUPLICATE_ACTION_THIS_TURN"]
+    assert changed["action"]["type"] == "ORDER_AMENDED"  # no "shall I confirm?" for a clear change
+    assert changed["tool_calls"][1]["result"]["next_step"]
     view = (await client.get("/api/v1/orders")).json()[0]
     assert view["items"][0]["quantity"] == 3 and view["amended"] is True
+    # What the reply did is kept with it: for the guest's screen, and for the next turn.
+    [entry] = changed["done"]
+    assert entry["kind"] == "order_changed" and entry["order_number"] == order["order_number"]
+    assert entry["changes"][0]["type"] == "quantity_changed" and entry["changes"][0]["quantity_after"] == 3
+    await chat(client, "شكراً")
+    assert chats[1].context["your_last_reply_did"] == changed["done"]
+    assert chats[1].context["my_sent_orders"][0]["items"][0]["quantity"] == 3
+    assert "order_change_awaiting_confirmation" not in chats[1].context
+    history = (await client.get("/api/v1/assistant/history")).json()["history"]
+    assert history[1]["done"] == changed["done"] and "done" not in history[0]
 
 
 @pytest.mark.asyncio
-async def test_the_confirm_button_applies_the_change_shown(client, db_session, monkeypatch):
+async def test_cancelling_a_whole_sent_order_waits_for_the_guests_yes(client, db_session, monkeypatch, debug_mode):
+    await seed_database(db_session)
+    await start_visit(client, db_session, "T4")
+    order = await send_order(client, db_session, "شاي", 2)
+    tea_item = (await client.get("/api/v1/orders")).json()[0]["items"][0]["item_id"]
+    change = {"order_id": order["order_id"], "operations": [{"op": "remove", "item_id": tea_item}]}
+    chats = script_model(monkeypatch,
+        [model_response(model_call("change_sent_order", **change, guest_words="شيل الشاي")),
+         model_response(model_call("change_sent_order", **change, guest_words="شيل الشاي")),  # same turn: still asks
+         model_response(text="هيك بينلغى الطلب كله. بدك ألغيه؟")],
+        [model_response(model_call("change_sent_order", **change, guest_words="اه الغيه")),
+         model_response(text="تم، ألغيت الطلب.")],
+    )
+
+    asked = await chat(client, "شيل الشاي من طلبي")
+    assert [call["result"]["error_code"] for call in asked["tool_calls"]] == ["CANCEL_NEEDS_YES", "CANCEL_NEEDS_YES"]
+    assert asked["action"]["type"] == "AWAITING_AMENDMENT_CONFIRMATION"  # the red cancel card
+    assert asked["action"]["amendment"]["cancels_order"] is True and asked["done"] == []
+    assert (await client.get("/api/v1/orders")).json()[0]["status"] != "CANCELLED"
+
+    cancelled = await chat(client, "اه الغيه")
+    assert "order_change_awaiting_confirmation" in chats[1].context
+    assert cancelled["action"]["type"] == "ORDER_AMENDED"
+    assert cancelled["done"][0]["cancelled"] is True
+    assert (await client.get("/api/v1/orders")).json()[0]["status"] == "CANCELLED"
+
+
+@pytest.mark.asyncio
+async def test_the_confirm_button_cancels_the_order_shown(client, db_session, monkeypatch):
     await seed_database(db_session)
     await start_visit(client, db_session, "T5")
     order = await send_order(client, db_session, "حمص", 1)
-    tea = await dish(db_session, "شاي")
+    item = (await client.get("/api/v1/orders")).json()[0]["items"][0]["item_id"]
     script_model(monkeypatch,
-        [model_response(model_call("search_knowledge", query="شاي", source_types=["product"])),
-         model_response(model_call("prepare_order_amendment", order_id=order["order_id"],
-                                   operations=[{"op": "add", "product_id": tea.id, "quantity": 2}])),
-         model_response(text="بضيف 2 شاي على طلبك. بأكد؟")],
+        [model_response(model_call("change_sent_order", order_id=order["order_id"],
+                                   operations=[{"op": "update", "item_id": item, "quantity": 0}],
+                                   guest_words="ما بدي الحمص")),
+         model_response(text="هيك بينلغى الطلب كله. بدك ألغيه؟")],
     )
-    await chat(client, "ضيف 2 شاي على طلبي")
+    await chat(client, "ما بدي الحمص")
     pressed = await client.post("/api/v1/assistant/confirm-amendment", json={"language": "ar"})
     assert pressed.status_code == 200 and pressed.json()["success"] is True
-    assert pressed.json()["response"].startswith("تم تعديل الطلب رقم")
-    names = {item["name_ar"]: item for item in (await client.get("/api/v1/orders")).json()[0]["items"]}
-    assert names["شاي"]["quantity"] == 2 and names["شاي"]["added_later"] is True
+    assert pressed.json()["done"][0]["kind"] == "order_changed" and pressed.json()["done"][0]["cancelled"] is True
+    assert (await client.get("/api/v1/orders")).json()[0]["status"] == "CANCELLED"
+    # The button applies only what a card showed: nothing is waiting any more.
+    again = await client.post("/api/v1/assistant/confirm-amendment", json={"language": "ar"})
+    assert again.json()["success"] is False
+
+
+@pytest.mark.asyncio
+async def test_the_model_cannot_use_the_buttons_tool(client, db_session, monkeypatch, debug_mode):
+    await seed_database(db_session)
+    await start_visit(client, db_session, "T5")
+    script_model(monkeypatch,
+        [model_response(model_call("confirm_order_amendment", confirmed=True, guest_words="اه")),
+         model_response(text="ما في تعديل مستني.")])
+    reply = await chat(client, "اه")
+    assert reply["tool_calls"][0]["result"]["error_code"] == "UNKNOWN_TOOL"
 
 
 @pytest.mark.asyncio
@@ -104,22 +152,26 @@ async def test_ready_orders_cannot_be_changed_from_the_chat(client, db_session, 
         await admin.post(f"/api/v1/admin/orders/{order['order_id']}/{step}")
     item = (await guest.get("/api/v1/orders")).json()[0]["items"][0]["item_id"]
     script_model(monkeypatch,
-        [model_response(model_call("prepare_order_amendment", order_id=order["order_id"],
-                                   operations=[{"op": "remove", "item_id": item}])),
-         model_response(text="الطلب جاهز فما بقدر أعدّل عليه.")],
+        [model_response(model_call("change_sent_order", order_id=order["order_id"],
+                                   operations=[{"op": "update", "item_id": item, "note": "بدون كمون"}],
+                                   guest_words="بدون كمون")),
+         model_response(text="الطلب جاهز فما بقدر أعدّل عليه. بتحب أنادي حدا من الموظفين؟")],
     )
-    reply = await chat(guest, "شيل الفول")
+    reply = await chat(guest, "خلي الفول بدون كمون")
     result = reply["tool_calls"][0]["result"]
     assert result["success"] is False and result["error_code"] == "ORDER_LOCKED"
     assert result["details"]["reason"] == "READY"
+    assert reply["done"] == []
 
 
 @pytest.mark.asyncio
 async def test_dishes_shown_recently_can_be_added_without_searching_again(client, db_session, monkeypatch, debug_mode):
+    # A menu too large to list in full: the assistant searches, and remembers what it found.
+    monkeypatch.setattr(menu_memory, "FULL_MENU_LIMIT", 3)
     await seed_database(db_session)
     await start_visit(client, db_session, "T7")
     tea = await dish(db_session, "شاي")
-    add_tea = model_call("update_draft_order", operations=[{"op": "add", "product_id": tea.id, "quantity": 2}])
+    add_tea = model_call("update_draft_order", operations=[{"op": "add", "product_id": tea.id, "quantity": 2, "guest_gave_quantity": True}])
     chats = script_model(monkeypatch,
         [model_response(model_call("search_knowledge", query="شاي", source_types=["product"])),
          model_response(text="عنا شاي بالنعناع أو الميرمية بـ 1.55 د.أ. كم كاسة؟")],
@@ -156,14 +208,14 @@ async def test_a_turn_that_fails_after_sending_still_reports_the_order(client, d
 
     turns = iter([
         ScriptedChat([model_response(model_call("search_knowledge", query="شاي", source_types=["product"])),
-                      model_response(model_call("update_draft_order", operations=[{"op": "add", "product_id": tea.id, "quantity": 1}])),
+                      model_response(model_call("update_draft_order", operations=[{"op": "add", "product_id": tea.id, "quantity": 1, "guest_gave_quantity": True}])),
                       *summary_calls(),
                       model_response(text="شاي واحد، 1.55 د.أ. بأكد؟")]),
         BreaksAfterSubmit([model_response(model_call("submit_order", confirmed_summary=True, guest_words="أكد"))]),
     ])
     monkeypatch.setattr(settings, "GEMINI_API_KEY", "offline-test-key")
     monkeypatch.setattr(AssistantService, "_create_chat", classmethod(lambda cls, *args, **kwargs: next(turns)))
-    await chat(client, "بدي شاي وبس")
+    await chat(client, "بدي شاي واحد وبس")
     reply = await chat(client, "أكد")
     assert reply["response"].startswith("تم إرسال طلبك رقم")  # not an error: the order really went out
     assert len((await db_session.execute(select(OrderModel))).scalars().all()) == 1
@@ -172,7 +224,7 @@ async def test_a_turn_that_fails_after_sending_still_reports_the_order(client, d
 
 
 @pytest.mark.asyncio
-async def test_order_status_shows_the_table_without_revealing_guests(client, db_session, new_browser):
+async def test_order_status_shows_only_the_guests_own_orders(client, db_session, new_browser):
     await seed_database(db_session)
     first, second = client, new_browser()
     await start_visit(first, db_session, "T9")
@@ -184,11 +236,9 @@ async def test_order_status_shows_the_table_without_revealing_guests(client, db_
     second_guest = next(g for g in guests if g.id != first_id)
     status = await AssistantToolExecutor(db_session, second_guest.id, second_guest.table_session_id, "T9").execute(
         "get_order_status", {})
-    mine = [o for o in status["orders"] if o["mine"]]
-    others = [o for o in status["orders"] if not o["mine"]]
-    assert len(mine) == 1 and len(others) == 1
-    assert mine[0]["editable"] and "item_id" in mine[0]["items"][0]
-    assert not others[0]["editable"] and "item_id" not in others[0]["items"][0]
+    # The friend's order at the same table stays private.
+    assert [item["name_ar"] for order in status["orders"] for item in order["items"]] == ["شاي"]
+    assert status["orders"][0]["editable"] and "item_id" in status["orders"][0]["items"][0]
     assert not any(guest.id in json.dumps(status) for guest in guests)
 
 
@@ -215,9 +265,8 @@ async def test_openai_client_counts_tokens_and_drops_fields_a_model_refuses():
                       "output_tokens": 40, "output_tokens_details": {"reasoning_tokens": 12}}})
 
     chat_client = OpenAIAgentChat(RuntimeModelConfig("openai", "gpt-6-luna", "test-key", reasoning_effort="low"),
-                                  [], "static instructions")
-    await chat_client._client.aclose()
-    chat_client._client = httpx.AsyncClient(transport=httpx.MockTransport(responder))
+                                  [], "static instructions",
+                                  client=httpx.AsyncClient(transport=httpx.MockTransport(responder)))
     try:
         reply = await chat_client.send_message("مرحبا", context={"table": "T1"})
         assert reply.text == "أهلاً!"
@@ -266,7 +315,7 @@ async def test_usage_is_recorded_per_turn_and_summarized_for_the_admin(client, d
 def order_script(tea, *later_turns):
     """Turn 1: the guest orders tea and finishes; the summary is shown."""
     return [[model_response(model_call("search_knowledge", query="شاي", source_types=["product"])),
-             model_response(model_call("update_draft_order", operations=[{"op": "add", "product_id": tea.id, "quantity": 1}])),
+             model_response(model_call("update_draft_order", operations=[{"op": "add", "product_id": tea.id, "quantity": 1, "guest_gave_quantity": True}])),
              *summary_calls(),
              model_response(text="شاي واحد، 1.55 د.أ. بتحب أبعته للمطبخ؟")], *later_turns]
 
@@ -285,7 +334,7 @@ async def test_an_order_is_sent_only_on_the_guests_own_yes(client, db_session, m
         [model_response(model_call("submit_order", confirmed_summary=True, guest_words="تمام ابعته")),
          model_response(text="تم.")],
     ))
-    await chat(client, "بدي شاي وبس")
+    await chat(client, "بدي شاي واحد وبس")
     refused = await chat(client, "لا ما بدي إشي ثاني")
     assert [call["result"]["error_code"] for call in refused["tool_calls"]] == ["CONFIRMATION_WORDS_REQUIRED"] * 2
     assert (await db_session.execute(select(OrderModel))).scalars().all() == []
@@ -300,14 +349,14 @@ async def test_no_summary_in_the_same_reply_as_a_suggestion(client, db_session, 
     tea = await dish(db_session, "شاي")
     script_model(monkeypatch,
         [model_response(model_call("search_knowledge", query="شاي", source_types=["product"])),
-         model_response(model_call("update_draft_order", operations=[{"op": "add", "product_id": tea.id, "quantity": 1}])),
+         model_response(model_call("update_draft_order", operations=[{"op": "add", "product_id": tea.id, "quantity": 1, "guest_gave_quantity": True}])),
          model_response(model_call("recommend_products")),
          model_response(model_call("prepare_order_confirmation", customer_finished=True)),
          model_response(text="بتحب فلافل مع الشاي؟")],
         [model_response(model_call("prepare_order_confirmation", customer_finished=True)),
          model_response(text="شاي واحد. بتحب أبعته؟")],
     )
-    suggested = await chat(client, "بدي شاي وخلص")
+    suggested = await chat(client, "بدي شاي واحد وخلص")
     assert suggested["tool_calls"][-1]["result"]["error_code"] == "SUGGESTION_FIRST"
     assert suggested["action"] is None
     summary = await chat(client, "لا شكراً")
@@ -321,12 +370,36 @@ async def test_nothing_fits_goes_straight_to_the_summary(client, db_session, mon
     tea = await dish(db_session, "شاي")
     script_model(monkeypatch, [
         model_response(model_call("search_knowledge", query="شاي", source_types=["product"])),
-        model_response(model_call("update_draft_order", operations=[{"op": "add", "product_id": tea.id, "quantity": 1}])),
+        model_response(model_call("update_draft_order", operations=[{"op": "add", "product_id": tea.id, "quantity": 1, "guest_gave_quantity": True}])),
         model_response(model_call("recommend_products")),
         model_response(model_call("prepare_order_confirmation", customer_finished=True, no_fitting_suggestion=True)),
         model_response(text="شاي واحد. بتحب أبعته؟")])
-    shown = await chat(client, "بدي شاي وخلص")
+    shown = await chat(client, "بدي شاي واحد وخلص")
     assert shown["action"]["type"] == "AWAITING_ORDER_CONFIRMATION"
+
+
+@pytest.mark.asyncio
+async def test_last_dishes_and_the_summary_come_in_one_step(client, db_session, monkeypatch, debug_mode):
+    await seed_database(db_session)
+    await start_visit(client, db_session, "T4")
+    tea = await dish(db_session, "شاي")
+    script_model(monkeypatch,
+        [model_response(model_call("update_draft_order", guest_finished=True, operations=[
+            {"op": "add", "product_id": tea.id, "quantity": 2, "guest_gave_quantity": True}])),
+         model_response(model_call("prepare_order_confirmation", customer_finished=True)),  # already there
+         model_response(text="كاستين شاي، المجموع 1.00 د.أ. أبعته للمطبخ؟")],
+        [model_response(model_call("submit_order", confirmed_summary=True, guest_words="اه ابعته")),
+         model_response(text="وصل طلبك.")],
+    )
+    shown = await chat(client, "بدي 2 شاي وبس")
+    added, again = (call["result"] for call in shown["tool_calls"])
+    assert added["success"] and added["summary"]["items"][0]["quantity"] == 2
+    assert "suggestion_ideas" not in added and "summary" in added["next_step"]
+    assert again["success"] and again["summary"] == added["summary"]
+    assert shown["action"]["type"] == "AWAITING_ORDER_CONFIRMATION"
+    assert (await client.get("/api/v1/orders")).json() == []  # sent only on the guest's yes, later
+    sent = await chat(client, "اه ابعته")
+    assert sent["action"]["type"] == "ORDER_SUBMITTED"
 
 
 @pytest.mark.asyncio
@@ -366,9 +439,8 @@ async def test_a_brief_provider_hiccup_is_retried(monkeypatch):
                     httpx.Response(200, json={"output": [{"type": "message", "content": [
                         {"type": "output_text", "text": "أهلاً!"}]}], "usage": {}})])
     monkeypatch.setattr(OpenAIAgentChat, "RETRY_DELAYS", (0, 0))
-    chat_client = OpenAIAgentChat(RuntimeModelConfig("openai", "gpt-6-luna", "test-key"), [], "static")
-    await chat_client._client.aclose()
-    chat_client._client = httpx.AsyncClient(transport=httpx.MockTransport(lambda request: next(answers)))
+    chat_client = OpenAIAgentChat(RuntimeModelConfig("openai", "gpt-6-luna", "test-key"), [], "static",
+                                  client=httpx.AsyncClient(transport=httpx.MockTransport(lambda request: next(answers))))
     try:
         assert (await chat_client.send_message("مرحبا")).text == "أهلاً!"
     finally:
@@ -384,9 +456,8 @@ async def test_a_used_up_quota_is_not_retried(monkeypatch):
         return httpx.Response(429, json={"error": {"code": "insufficient_quota", "message": "quota"}})
 
     monkeypatch.setattr(OpenAIAgentChat, "RETRY_DELAYS", (0, 0))
-    chat_client = OpenAIAgentChat(RuntimeModelConfig("openai", "gpt-6-luna", "test-key"), [], "static")
-    await chat_client._client.aclose()
-    chat_client._client = httpx.AsyncClient(transport=httpx.MockTransport(quota))
+    chat_client = OpenAIAgentChat(RuntimeModelConfig("openai", "gpt-6-luna", "test-key"), [], "static",
+                                  client=httpx.AsyncClient(transport=httpx.MockTransport(quota)))
     try:
         with pytest.raises(httpx.HTTPStatusError):
             await chat_client.send_message("مرحبا")
@@ -402,11 +473,12 @@ async def test_more_of_a_dish_already_sent_needs_no_new_search(client, db_sessio
     tea = await dish(db_session, "شاي")
     order = await send_order(client, db_session, "شاي", 1)
     script_model(monkeypatch, [
-        model_response(model_call("prepare_order_amendment", order_id=order["order_id"],
-                                  operations=[{"op": "add", "product_id": tea.id, "quantity": 1}])),
-        model_response(text="بصير عندك 2 شاي. بأكد؟")])
-    shown = await chat(client, "زيد على طلبي شاي كمان")
-    assert shown["action"]["type"] == "AWAITING_AMENDMENT_CONFIRMATION"  # the order's own dish is known
+        model_response(model_call("change_sent_order", order_id=order["order_id"], guest_words="شاي واحد كمان",
+                                  operations=[{"op": "add", "product_id": tea.id, "quantity": 1, "guest_gave_quantity": True}])),
+        model_response(text="تم، صار عندك كاستين شاي.")])
+    shown = await chat(client, "زيد على طلبي شاي واحد كمان")
+    assert shown["action"]["type"] == "ORDER_AMENDED"  # the order's own dish is known
+    assert (await client.get("/api/v1/orders")).json()[0]["items"][0]["quantity"] == 2
 
 
 @pytest.mark.asyncio
@@ -423,22 +495,6 @@ async def test_a_named_dish_brings_its_variations(db_session, monkeypatch):
     names = [match["product"]["name_ar"] for match in found["matches"]]
     assert names[0] == "حمص"
     assert {"حمص بالجوز والريحان", "حمص بيروتي", "حمص باللحم"} <= set(names)
-
-
-@pytest.mark.asyncio
-async def test_an_order_gets_a_suggestion_considered_before_its_summary(client, db_session, monkeypatch, debug_mode):
-    await seed_database(db_session)
-    await start_visit(client, db_session, "T4")
-    tea = await dish(db_session, "شاي")
-    script_model(monkeypatch, [
-        model_response(model_call("search_knowledge", query="شاي", source_types=["product"])),
-        model_response(model_call("update_draft_order", operations=[{"op": "add", "product_id": tea.id, "quantity": 1}])),
-        model_response(model_call("prepare_order_confirmation", customer_finished=True)),
-        model_response(model_call("recommend_products")),
-        model_response(text="بتحب فلافل مع الشاي؟")])
-    reply = await chat(client, "بدي شاي وبس")
-    assert reply["tool_calls"][2]["result"]["error_code"] == "SUGGESTION_NOT_CONSIDERED"
-    assert reply["action"] is None  # no summary yet: the suggestion comes first
 
 
 @pytest.mark.asyncio
@@ -460,7 +516,7 @@ async def test_a_change_after_the_summary_shows_the_updated_summary(client, db_s
     await start_visit(client, db_session, "T4")
     tea = await dish(db_session, "شاي")
     script_model(monkeypatch, *order_script(tea))
-    await chat(client, "بدي شاي وبس")
+    await chat(client, "بدي شاي واحد وبس")
     line = (await client.get("/api/v1/draft")).json()["items"][0]["line_id"]
     script_model(monkeypatch,
         [model_response(model_call("update_draft_order", operations=[{"op": "set_quantity", "line_id": line, "quantity": 2}])),

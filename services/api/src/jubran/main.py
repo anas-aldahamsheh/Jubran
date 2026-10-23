@@ -98,6 +98,8 @@ async def lifespan(app: FastAPI):
     for task in background:
         with contextlib.suppress(asyncio.CancelledError):
             await task
+    from jubran.application.ai.model_clients import close_shared_http_client
+    await close_shared_http_client()
     await engine.dispose()
 
 

@@ -20,6 +20,7 @@ def draft_view(draft: Optional[Dict[str, Any]]) -> Dict[str, Any]:
     for position, item in enumerate(draft.get("items") or [], start=1):
         line = {"n": position, "line_id": item.get("line_id"), "product_id": item.get("product_id"),
                 "name_ar": item.get("name_ar"), "name_en": item.get("name_en"), "quantity": item.get("quantity"),
+                **({"unit": item["unit"]} if item.get("unit") else {}),
                 "unit_price": jod(item.get("unit_price_minor")), "line_total": jod(item.get("line_total_minor"))}
         if item.get("note"):
             line["note"] = item["note"]
@@ -32,7 +33,7 @@ def draft_view(draft: Optional[Dict[str, Any]]) -> Dict[str, Any]:
 def product_view(product: Dict[str, Any]) -> Dict[str, Any]:
     view = {"id": product.get("id"), "name_ar": product.get("name_ar"), "name_en": product.get("name_en"),
             "price": jod(product.get("price_minor")), "available": bool(product.get("is_available", True))}
-    for key in ("category_ar", "category_en", "description_ar", "description_en"):
+    for key in ("units", "category_ar", "category_en", "description_ar", "description_en"):
         if product.get(key):
             view[key] = product[key]
     return view
@@ -99,8 +100,12 @@ def amendment_view(summary: Dict[str, Any]) -> Dict[str, Any]:
         "kitchen_already_preparing": summary.get("kitchen_already_preparing"),
         "changes": [{"type": change["type"], "name_ar": change["name_ar"], "name_en": change["name_en"],
                      "quantity_before": change["quantity_before"], "quantity_after": change["quantity_after"],
+                     **({"unit": change["unit"]} if change.get("unit") else {}),
                      "unit_price": jod(change.get("unit_price_minor")),
-                     **({"note": change["note"]} if change.get("note") else {})}
+                     **({"note": change["note"]} if change.get("note") else {}),
+                     **({key: change.get(key) for key in ("note_before", "note_after")}
+                        if change["type"] == "note_changed" else {}),
+                     **({"unit_before": change.get("unit_before")} if change["type"] == "unit_changed" else {})}
                     for change in summary.get("changes") or []],
         "total_before": jod(summary.get("total_before_minor")),
         "total_after": jod(summary.get("total_after_minor")),

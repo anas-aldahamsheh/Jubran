@@ -36,7 +36,8 @@ async def add_draft_item(
         table_session_id=table_session.id,
         product_id=req.product_id,
         quantity=req.quantity,
-        note=req.note
+        note=req.note,
+        unit=req.unit
     )
 
 
@@ -116,8 +117,11 @@ async def get_orders(
 AMENDMENT_ERRORS = {
     "PRODUCT_UNAVAILABLE": "هاد الصنف مش متوفر حالياً، فما بنقدر نزيد منه.",
     "QUANTITY_LIMIT": "الحد الأقصى 50 من الصنف الواحد.",
+    "UNIT_REQUIRED": "اختار طريقة التقديم لهاد الصنف.",
     "ORDER_ITEM_NOT_FOUND": "هاد الصنف مش موجود بالطلب.",
     "NO_CHANGE": "ما في أي تغيير على الطلب.",
+    "UNIT_NOT_OFFERED": "هاد الصنف ما بيتقدم بهاي الطريقة.",
+    "UNSUPPORTED_FIELD": "ما قدرنا نطبّق هاد التعديل كما هو.",
 }
 
 
@@ -136,4 +140,4 @@ async def amend_order(
             [change.model_dump(exclude_none=True) for change in req.operations], req.expected_version)
     except AmendmentOperationError as exc:
         raise BusinessRuleError(AMENDMENT_ERRORS.get(exc.code, "ما قدرنا نطبّق هاد التعديل."), exc.code, 422,
-                                {"operation_index": exc.index}) from exc
+                                {"operation_index": exc.index, **exc.details}) from exc

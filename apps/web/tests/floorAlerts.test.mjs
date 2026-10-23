@@ -31,3 +31,14 @@ test("a guest changing an order the kitchen is preparing rings; a change before 
   const seen = alertKeys(cooking([{ id: "a1", needs_attention: false }]));
   assert.deepEqual(newAlerts(before, seen), { order: false, call: false });
 });
+
+test("a guest adding to their complaint rings, even while staff are handling it", () => {
+  const complaint = (status, message) => ({ active_orders: [], service_queue: [{ id: "c1", kind: "COMPLAINT", status, message }] });
+  const open = alertKeys(complaint("OPEN", "الشاي بارد"));
+  const handling = alertKeys(complaint("IN_PROGRESS", "الشاي بارد"));
+  assert.deepEqual(newAlerts(open, handling), { order: false, call: false });  // staff took it: quiet
+  const added = alertKeys(complaint("IN_PROGRESS", "الشاي بارد\n[14:05] وما حدا إجا"));
+  assert.deepEqual(newAlerts(handling, added), { order: false, call: true });
+  const reopened = alertKeys(complaint("OPEN", "الشاي بارد\n[14:05] وما حدا إجا\n[14:30] رجع بارد"));
+  assert.deepEqual(newAlerts(alertKeys(complaint("RESOLVED", "الشاي بارد\n[14:05] وما حدا إجا")), reopened), { order: false, call: true });
+});

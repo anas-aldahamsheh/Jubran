@@ -11,7 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from jubran.application.ai import transcription_service
 from jubran.application.ai.live_voice import GptLiveProvider
-from jubran.application.ai.model_clients import GeminiAgentChat, OpenAIAgentChat
+from jubran.application.ai.model_clients import AnthropicAgentChat, GeminiAgentChat, OpenAIAgentChat
 from jubran.application.ai.model_config_service import (
     PROVIDERS, PURPOSES, ModelConfigService, RuntimeModelConfig, default_model, default_provider, environment_key,
 )
@@ -29,11 +29,12 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/v1/admin/ai-models", tags=["Admin AI Models"])
 
 Purpose = Literal["chat", "embedding", "transcription", "voice"]
+CLAUDE_EFFORTS = ("low", "medium", "high", "max")
 
 
 class SectionInput(BaseModel):
     """A section's form: provider, model and (optionally) a new key; thinking options are for chat."""
-    provider: Literal["openai", "gemini"]
+    provider: Literal["openai", "gemini", "anthropic"]
     model_id: str = Field(min_length=1, max_length=150)
     api_key: Optional[str] = Field(default=None, max_length=512)
     reasoning_effort: Optional[Literal["none", "minimal", "low", "medium", "high", "xhigh", "max"]] = None
@@ -52,6 +53,11 @@ class SectionInput(BaseModel):
             raise ValueError("Gemini thinking fields cannot be used with OpenAI")
         if self.provider == "gemini" and (self.reasoning_effort is not None or self.reasoning_mode is not None):
             raise ValueError("OpenAI reasoning fields cannot be used with Gemini")
+        if self.provider == "anthropic":
+            if self.thinking_level is not None or self.thinking_budget is not None or self.reasoning_mode is not None:
+                raise ValueError("Claude has one thinking option: its effort level")
+            if self.reasoning_effort not in (None, *CLAUDE_EFFORTS):
+                raise ValueError(f"Claude's effort is one of {', '.join(CLAUDE_EFFORTS)}")
         if self.thinking_level is not None and self.thinking_budget is not None:
             raise ValueError("Choose Gemini thinking level or token budget, not both")
         return self
@@ -115,7 +121,8 @@ async def _section(db: AsyncSession, purpose: str) -> dict:
 @router.get("")
 async def ai_settings(admin: UserModel = Depends(require_admin), db: AsyncSession = Depends(get_db_session)):
     return {"sections": [await _section(db, purpose) for purpose in PURPOSES],
-            "server_keys": {provider: bool(environment_key(provider)) for provider in ("openai", "gemini")}}
+            "server_keys": {provider: bool(environment_key(provider))
+                            for provider in ("openai", "gemini", "anthropic")}}
 
 
 @router.get("/usage")
@@ -173,7 +180,7 @@ CHECK_FAILURES = {
     "EMPTY_RESPONSE": ("لم يُرجع الموديل أي رد.", "The model returned nothing."),
     "FAILED": ("فشل الفحص. السبب الدقيق في سجل الخادم.", "The check failed; the exact reason is in the server log."),
 }
-_SECRETS = re.compile(r"(key=)[^&\s]+|sk-[A-Za-z0-9_-]{8,}|AIza[0-9A-Za-z_-]{20,}")
+_SECRETS = re.compile(r"(key=)[^&\s]+|sk-[A-Za-z0-9_-]{8,}|AIza[0-9A-Za-z_-]{20,}")  # sk- covers Claude keys too
 
 
 def _silence(seconds: float = 0.5, rate: int = 16000) -> bytes:
@@ -189,7 +196,8 @@ def _silence(seconds: float = 0.5, rate: int = 16000) -> bytes:
 
 async def _check_chat(config: RuntimeModelConfig) -> None:
     # Tools the model may ask for are never run here.
-    chat = (OpenAIAgentChat if config.provider == "openai" else GeminiAgentChat)(config, [], CHECK_INSTRUCTION)
+    chat_class = {"openai": OpenAIAgentChat, "anthropic": AnthropicAgentChat}.get(config.provider, GeminiAgentChat)
+    chat = chat_class(config, [], CHECK_INSTRUCTION)
     try:
         response = await chat.send_message("Connection check. Reply briefly.")
         if not (response.text or response.function_calls):

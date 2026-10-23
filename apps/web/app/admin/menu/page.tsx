@@ -11,17 +11,20 @@ import { AdminDishesSkeleton, RestaurantFormSkeleton } from "@/components/admin/
 import { CategoriesEditor } from "@/components/admin/CategoriesEditor";
 import { SelectField } from "@/components/common/SelectField";
 import { ProductImagePicker, type ManagedProductImage } from "@/components/admin/ProductImagePicker";
+import { UnitsField } from "@/components/admin/UnitsField";
 import { ProductVisual } from "@/components/customer/ProductVisual";
 import { Sheet, SheetBody, SheetFooter, SheetHeader } from "@/components/ui/Sheet";
 import { SegmentedControl } from "@/components/ui/SegmentedControl";
 import { Switch } from "@/components/ui/Switch";
 import { EmptyState, LoadError, Reveal, SlowNote } from "@/components/ui/Feedback";
 import { Toast } from "@/components/ui/Toast";
+import { UnitTag } from "@/components/ui/UnitTag";
 import { apiFetch, ApiException } from "@/lib/api";
 import { useAutoRetry } from "@/lib/useAutoRetry";
-import { priceToFils } from "@/lib/price";
 import { useScrollRow } from "@/lib/useScrollRow";
 import { ScrollRowArrows } from "@/components/ui/ScrollRowArrows";
+import { priceToFils } from "@/lib/price";
+import { cleanUnits, dishUnits, type DishUnits } from "@/lib/units";
 import { useLanguage } from "@/context/LanguageContext";
 import { EASE_OUT, spring } from "@/lib/motion";
 
@@ -52,13 +55,15 @@ interface RestaurantProfile {
   };
 }
 
-interface Product {
+interface Product extends DishUnits {
   id: string;
   category_id: string;
   name_ar: string;
   name_en: string;
   description_ar?: string;
   description_en?: string;
+  /** No units saved: the unit shown is picked automatically. */
+  units_automatic?: boolean;
   price_minor: number;
   price_jod: string;
   price_display_ar: string;
@@ -174,6 +179,8 @@ export default function AdminMenuPage() {
   const [addDescAr, setAddDescAr] = useState("");
   const [addDescEn, setAddDescEn] = useState("");
   const [addPriceJod, setAddPriceJod] = useState("");
+  const [addUnits, setAddUnits] = useState<string[]>([]);
+  const [addUnitText, setAddUnitText] = useState("");
   const [addIsAvailable, setAddIsAvailable] = useState(true);
   const [addImageUrl, setAddImageUrl] = useState("");
   const [addImages, setAddImages] = useState<ManagedProductImage[]>([]);
@@ -188,6 +195,8 @@ export default function AdminMenuPage() {
   const [editDescAr, setEditDescAr] = useState("");
   const [editDescEn, setEditDescEn] = useState("");
   const [editPriceJod, setEditPriceJod] = useState("");
+  const [editUnits, setEditUnits] = useState<string[]>([]);
+  const [editUnitText, setEditUnitText] = useState("");
   const [editIsAvailable, setEditIsAvailable] = useState(true);
   const [editImageUrl, setEditImageUrl] = useState("");
   const [editImages, setEditImages] = useState<ManagedProductImage[]>([]);
@@ -334,6 +343,8 @@ export default function AdminMenuPage() {
     setAddDescAr("");
     setAddDescEn("");
     setAddPriceJod("");
+    setAddUnits([]);
+    setAddUnitText("");
     setAddIsAvailable(true);
     setAddImageUrl("");
     setAddImages([]);
@@ -368,6 +379,8 @@ export default function AdminMenuPage() {
           description_ar: addDescAr.trim() || undefined,
           description_en: addDescEn.trim() || undefined,
           price_minor: priceMinor,
+          // Empty: picked automatically from the name and category.
+          units: cleanUnits([...addUnits, addUnitText]),
           is_available: addIsAvailable,
           image_asset_url: addImageUrl.trim() || undefined,
         }),
@@ -412,6 +425,8 @@ export default function AdminMenuPage() {
     setEditDescAr(product.description_ar || "");
     setEditDescEn(product.description_en || "");
     setEditPriceJod(product.price_jod);
+    setEditUnits(product.units_automatic ? [] : product.units || []);
+    setEditUnitText("");
     setEditIsAvailable(product.is_available);
     setEditImageUrl(product.image_asset_url || "");
     setEditImages((product.images || []).map((image) => ({ key: image.id, id: image.id, url: image.url })));
@@ -442,6 +457,8 @@ export default function AdminMenuPage() {
           description_ar: editDescAr.trim(),
           description_en: editDescEn.trim(),
           price_minor: priceMinor,
+          // [] goes back to the automatic unit.
+          units: cleanUnits([...editUnits, editUnitText]),
           is_available: editIsAvailable,
           image_asset_url: editImageUrl.trim(),
         }),
@@ -604,6 +621,13 @@ export default function AdminMenuPage() {
             />
           </div>
         </div>
+
+        <UnitsField id={`${prefix}-units`}
+          units={add ? addUnits : editUnits}
+          onChange={add ? setAddUnits : setEditUnits}
+          typed={add ? addUnitText : editUnitText}
+          onTypedChange={add ? setAddUnitText : setEditUnitText}
+          automatic={!add && editingProduct?.units_automatic ? dishUnits(editingProduct, lang)[0]?.label : null} />
 
         <div>
           <label htmlFor={`${prefix}-description-ar`} className="field-label">{add ? t("وصف الطبق والمكونات (عربي)", "Dish description & ingredients (Arabic)") : t("الوصف والمكونات (عربي)", "Description & ingredients (Arabic)")}</label>
@@ -947,6 +971,10 @@ export default function AdminMenuPage() {
                                       </div>
                                     </div>
                                     {description && <p className="mt-1.5 line-clamp-2 text-sm leading-relaxed text-muted">{description}</p>}
+                                    <p className="mt-1.5 flex flex-wrap items-center gap-1">
+                                      {dishUnits(prod, lang).map((unit) => <UnitTag key={unit.value} label={unit.label} />)}
+                                      {prod.units_automatic && <span className="text-[0.6875rem] text-subtle">{t("تلقائي", "automatic")}</span>}
+                                    </p>
                                   </div>
                                 </div>
 

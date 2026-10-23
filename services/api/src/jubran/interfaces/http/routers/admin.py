@@ -153,7 +153,8 @@ async def admin_create_product(
         description_ar=req.description_ar,
         description_en=req.description_en,
         is_available=req.is_available,
-        image_asset_url=req.image_asset_url
+        image_asset_url=req.image_asset_url,
+        units=req.units
     )
     await SemanticKnowledgeService.refresh_after_admin_change(db)
     await announce_product_change(db, "product.created", new_prod["id"])
@@ -178,7 +179,8 @@ async def admin_update_product(
         description_en=req.description_en,
         price_minor=req.price_minor,
         is_available=req.is_available,
-        image_asset_url=req.image_asset_url
+        image_asset_url=req.image_asset_url,
+        units=req.units
     )
     await SemanticKnowledgeService.refresh_after_admin_change(db)
     await announce_product_change(db, "product.updated", updated["id"])

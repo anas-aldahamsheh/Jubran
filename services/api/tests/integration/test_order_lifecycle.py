@@ -1,4 +1,4 @@
-"""Kitchen workflow per the spec: pending -> preparing -> ready, then an optional "served" marker."""
+"""Kitchen workflow: pending -> preparing -> ready -> served, in order; guests follow the same four steps."""
 import pytest
 
 from jubran.infrastructure.db.seed import seed_database
@@ -20,11 +20,12 @@ def table_state(floor, number):
 
 
 @pytest.mark.asyncio
-async def test_steps_cannot_be_skipped_and_guest_sees_three_states(client, db_session, new_browser):
+async def test_steps_cannot_be_skipped_and_guest_sees_four_states(client, db_session, new_browser):
     await seed_database(db_session)
     guest, admin = client, new_browser()
     order_id = await submitted_order(guest, db_session)
     await sign_in(admin)
+    assert (await guest.get("/api/v1/orders")).json()[0]["status_display_ar"] == "بانتظار التأكيد"
 
     # Not ready before cooking starts, not served before it is ready.
     assert (await admin.post(f"/api/v1/admin/orders/{order_id}/mark-ready")).status_code == 400
@@ -38,9 +39,11 @@ async def test_steps_cannot_be_skipped_and_guest_sees_three_states(client, db_se
     assert table_state((await admin.get("/api/v1/admin/floor")).json(), "T8") == "ORDER_READY"
     assert (await admin.post(f"/api/v1/admin/orders/{order_id}/start-preparing")).status_code == 400
 
-    # Serving clears the green table marker, but the guest still sees "ready".
+    # Serving clears the green table marker, and the guest sees the last step: delivered.
     assert (await admin.post(f"/api/v1/admin/orders/{order_id}/mark-served")).status_code == 200
     assert table_state((await admin.get("/api/v1/admin/floor")).json(), "T8") == "OCCUPIED_IDLE"
     order = (await guest.get("/api/v1/orders")).json()[0]
-    assert (order["status"], order["status_display_ar"], order["status_display_en"]) == ("READY", "جاهز", "Ready")
+    assert (order["status"], order["status_display_ar"], order["status_display_en"], order["is_served"]) == (
+        "READY", "تم التسليم", "Delivered", True)
+    assert order["editable"] is False
     assert (await admin.post(f"/api/v1/admin/orders/{order_id}/mark-served")).status_code == 400

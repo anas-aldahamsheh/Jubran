@@ -68,14 +68,13 @@ async def test_a_second_order_in_the_same_visit_can_get_a_suggestion_again(clien
     hummus = await product(db_session, "حمص")
     script_model(monkeypatch,
         [model_response(model_call("search_knowledge", query="حمص", source_types=["product"])),
-         model_response(model_call("update_draft_order", operations=[{"op": "add", "product_id": hummus.id, "quantity": 1}])),
-         model_response(model_call("recommend_products")),
+         model_response(model_call("update_draft_order", operations=[{"op": "add", "product_id": hummus.id, "quantity": 1, "guest_gave_quantity": True}])),
          model_response(text="بتحب تضيف شاي؟")],
         [model_response(model_call("prepare_order_confirmation", customer_finished=True)),
          model_response(text="هذا الملخص. بتأكد؟")],
         [model_response(model_call("submit_order", confirmed_summary=True, guest_words="أكد")), model_response(text="تم.")],
     )
-    await client.post("/api/v1/assistant/chat", json={"message": "بدي حمص وخلص"})
+    await client.post("/api/v1/assistant/chat", json={"message": "بدي حمص واحد"})
 
     async def suggested():
         db_session.expire_all()

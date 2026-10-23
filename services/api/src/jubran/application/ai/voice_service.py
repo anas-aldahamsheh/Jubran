@@ -44,5 +44,5 @@ class VoiceAssistantService:
                                              table_number, user_text, language)
         return {"spoken_text": result["response"], "user_text": user_text,
                 "language": language or "ar", "tool_calls": result["tool_calls"],
-                "draft": result["draft"], "action": result["action"],
+                "draft": result["draft"], "action": result["action"], "done": result.get("done") or [],
                 "table_number": table_number}

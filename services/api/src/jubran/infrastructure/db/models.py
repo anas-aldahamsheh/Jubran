@@ -181,6 +181,9 @@ class ProductModel(Base):
     currency: Mapped[str] = mapped_column(String(3), default="JOD", nullable=False)
     is_available: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
     image_asset_url: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    # How the dish is counted, as the admin wrote it: a JSON list such as ["صحن", "علبة"].
+    # Empty: chosen automatically (see domain/units.py).
+    units_json: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     sort_order: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     version: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
     created_at: Mapped[datetime] = mapped_column(UTCDateTime(), default=utc_now)
@@ -335,6 +338,8 @@ class DraftItemModel(Base):
     draft_order_id: Mapped[str] = mapped_column(String(36), ForeignKey("draft_orders.id", ondelete="CASCADE"), nullable=False)
     product_id: Mapped[str] = mapped_column(String(36), ForeignKey("products.id", ondelete="CASCADE"), nullable=False)
     quantity: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
+    # The unit the guest chose (e.g. "علبة" for a dish served as a plate or a box).
+    unit: Mapped[Optional[str]] = mapped_column(String(40), nullable=True)
     note: Mapped[Optional[str]] = mapped_column(String(200), nullable=True)
     created_at: Mapped[datetime] = mapped_column(UTCDateTime(), default=utc_now)
 
@@ -413,6 +418,8 @@ class OrderItemModel(Base):
     product_name_snapshot_en: Mapped[str] = mapped_column(String(150), nullable=False)
     unit_price_minor_snapshot: Mapped[int] = mapped_column(Integer, nullable=False)
     quantity: Mapped[int] = mapped_column(Integer, nullable=False)
+    # The unit ordered (plate, box...); none on lines from before units existed.
+    unit: Mapped[Optional[str]] = mapped_column(String(40), nullable=True)
     note: Mapped[Optional[str]] = mapped_column(String(200), nullable=True)
     line_total_minor: Mapped[int] = mapped_column(Integer, nullable=False)
     # Set only for dishes the guest added after sending the order.
@@ -469,7 +476,9 @@ class ComplaintModel(Base):
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
     table_session_id: Mapped[str] = mapped_column(String(36), ForeignKey("table_sessions.id"), nullable=False)
     customer_session_id: Mapped[str] = mapped_column(String(36), ForeignKey("customer_sessions.id"), nullable=False)
-    message: Mapped[str] = mapped_column(String(500), nullable=False)
+    # Everything the guest complained about this visit: the first complaint, then a timed
+    # line for each one after it ("[13:20] ...").
+    message: Mapped[str] = mapped_column(Text, nullable=False)
     category: Mapped[Optional[str]] = mapped_column(String(50), nullable=True)
     status: Mapped[ComplaintStatus] = mapped_column(
         SQLEnum(ComplaintStatus), default=ComplaintStatus.OPEN, nullable=False

@@ -3,14 +3,22 @@
 import { useLanguage } from "@/context/LanguageContext";
 import { ButtonSpinner } from "@/components/ui/Feedback";
 import { restaurantTime } from "@/lib/time";
+import { unitLabel, type LineUnit } from "@/lib/units";
 
-export interface OrderChange {
-  type: "added" | "removed" | "quantity_changed";
+export interface OrderChange extends LineUnit {
+  type: "added" | "removed" | "quantity_changed" | "note_changed" | "unit_changed";
   name_ar: string;
   name_en?: string;
   quantity_before: number;
   quantity_after: number;
   note?: string | null;
+  /** note_changed: the note before and after (none: no note). */
+  note_before?: string | null;
+  note_after?: string | null;
+  /** unit_changed: how it was served before. */
+  unit_before?: string | null;
+  unit_before_display_ar?: string | null;
+  unit_before_display_en?: string | null;
 }
 
 export interface OrderAmendment {
@@ -35,9 +43,21 @@ export interface ChangeableOrder {
 function useChangeText() {
   const { lang, t } = useLanguage();
   return (change: OrderChange) => {
-    const name = lang === "en" && change.name_en ? change.name_en : change.name_ar;
-    if (change.type === "added") return t(`+ أضاف ${change.quantity_after} × ${name}`, `+ added ${change.quantity_after} × ${name}`);
-    if (change.type === "removed") return t(`− حذف ${name} (${change.quantity_before})`, `− removed ${name} (${change.quantity_before})`);
+    const unit = unitLabel(change, lang);
+    const dish = lang === "en" && change.name_en ? change.name_en : change.name_ar;
+    const name = dish + (unit ? ` · ${unit}` : "");
+    const note = change.note ? ` («${change.note}»)` : "";
+    if (change.type === "added") return t(`+ أضاف ${change.quantity_after} × ${name}${note}`, `+ added ${change.quantity_after} × ${name}${note}`);
+    if (change.type === "removed") return t(`− حذف ${name}${note} (${change.quantity_before})`, `− removed ${name}${note} (${change.quantity_before})`);
+    if (change.type === "note_changed") {
+      return change.note_after
+        ? t(`${change.quantity_after} × ${name}: صار «${change.note_after}»`, `${change.quantity_after} × ${name}: now «${change.note_after}»`)
+        : t(`${change.quantity_after} × ${name}: شال الملاحظة «${change.note_before ?? ""}»`, `${change.quantity_after} × ${name}: note «${change.note_before ?? ""}» removed`);
+    }
+    if (change.type === "unit_changed") {
+      const before = (lang === "en" ? change.unit_before_display_en : change.unit_before_display_ar) || change.unit_before || "";
+      return t(`${change.quantity_after} × ${dish}: ${before} ← ${unit ?? ""}`, `${change.quantity_after} × ${dish}: ${before} → ${unit ?? ""}`);
+    }
     return t(`${name}: ${change.quantity_before} ← ${change.quantity_after}`, `${name}: ${change.quantity_before} → ${change.quantity_after}`);
   };
 }

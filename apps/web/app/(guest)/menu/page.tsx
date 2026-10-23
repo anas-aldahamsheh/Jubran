@@ -15,15 +15,17 @@ import { ProductVisual } from "@/components/customer/ProductVisual";
 import { AskAssistantButton } from "@/components/customer/AskAssistantButton";
 import { Sheet, SheetBody, SheetFooter, SheetHeader } from "@/components/ui/Sheet";
 import { QuantityStepper } from "@/components/ui/QuantityStepper";
+import { SegmentedControl } from "@/components/ui/SegmentedControl";
 import { ButtonSpinner, EmptyState, LoadError, Reveal, SlowNote } from "@/components/ui/Feedback";
 import { StatusPill } from "@/components/ui/StatusPill";
 import { Toast } from "@/components/ui/Toast";
 import { useMediaQuery } from "@/lib/useMediaQuery";
+import { useAutoRetry } from "@/lib/useAutoRetry";
 import { useScrollRow } from "@/lib/useScrollRow";
 import { ScrollRowArrows } from "@/components/ui/ScrollRowArrows";
-import { useAutoRetry } from "@/lib/useAutoRetry";
 import { formatFils } from "@/lib/price";
 import { otherLanguage } from "@/lib/otherLanguage";
+import { dishUnits, type DishUnits } from "@/lib/units";
 import { EASE_OUT, spring } from "@/lib/motion";
 
 interface Category {
@@ -32,7 +34,7 @@ interface Category {
   name_en: string;
 }
 
-interface Product {
+interface Product extends DishUnits {
   id: string;
   category_id: string;
   name_ar: string;
@@ -111,6 +113,8 @@ export default function MenuPage() {
   const [imageDirection, setImageDirection] = useState(1);
   const [note, setNote] = useState("");
   const [quantity, setQuantity] = useState(1);
+  // How the dish is served, for a dish that comes more than one way (a plate or a box).
+  const [unit, setUnit] = useState("");
   const [adding, setAdding] = useState(false);
   const [actionMessage, setActionMessage] = useState<string | null>(null);
   const [hasVisit, setHasVisit] = useState(false);
@@ -170,6 +174,7 @@ export default function MenuPage() {
     setSelectedProduct(product);
     setSelectedImageIndex(0);
     setQuantity(1);
+    setUnit(product.units?.[0] ?? "");
     setNote("");
   };
 
@@ -183,6 +188,7 @@ export default function MenuPage() {
         body: JSON.stringify({
           product_id: selectedProduct.id,
           quantity,
+          unit: unit || null,
           note: note.trim() || null,
         }),
       });
@@ -230,6 +236,10 @@ export default function MenuPage() {
       count: products.filter((product) => product.category_id === category.id).length,
     })),
   ];
+
+  // The ways the open dish is served, and the one counted in the quantity.
+  const servingOptions = selectedProduct ? dishUnits(selectedProduct, lang) : [];
+  const servedAs = servingOptions.find((option) => option.value === unit)?.label;
 
   const galleryImages = selectedProduct
     ? (selectedProduct.images?.length
@@ -533,8 +543,19 @@ export default function MenuPage() {
                       </p>
                     )}
 
+                    {servingOptions.length > 1 && (
+                      <div className="flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-line bg-surface-2 p-3 ps-4">
+                        <span className="font-semibold text-ink">{t("طريقة التقديم", "Serving")}</span>
+                        <SegmentedControl value={unit} onChange={setUnit} segments={servingOptions}
+                          ariaLabel={t("طريقة التقديم", "Serving")} />
+                      </div>
+                    )}
+
                     <div className="flex items-center justify-between gap-4 rounded-2xl border border-line bg-surface-2 p-3 ps-4">
-                      <span id="product-quantity-label" className="font-semibold text-ink">{t("الكمية", "Quantity")}</span>
+                      <span id="product-quantity-label" className="font-semibold text-ink">
+                        {t("الكمية", "Quantity")}
+                        {servedAs && <span className="ms-1.5 text-sm font-normal text-subtle">({servedAs})</span>}
+                      </span>
                       <QuantityStepper
                         value={quantity}
                         onDecrement={() => setQuantity((q) => Math.max(1, q - 1))}

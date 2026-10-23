@@ -106,6 +106,69 @@ export async function apiFetch<T>(
   options: RequestInit = {},
   retryWithFreshToken = true
 ): Promise<T> {
+  const response = await apiResponse(endpoint, options, retryWithFreshToken);
+  if (response.status === 204) {
+    return {} as T;
+  }
+  return (await response.json().catch(() => ({}))) as T;
+}
+
+const connectionProblem = () => new ApiException({
+  code: "NETWORK_ERROR",
+  message: inPageLanguage("تعذر الاتصال بالخادم، يرجى المحاولة مرة أخرى.", "Couldn't reach the server. Please try again."),
+}, 0);
+
+/**
+ * An API answer sent as server-sent events (the assistant writing its reply):
+ * each event is handed over as soon as it arrives. Errors before the first event
+ * are thrown exactly like apiFetch's.
+ */
+export async function apiStream(
+  endpoint: string,
+  options: RequestInit,
+  onEvent: (event: string, data: unknown) => void
+): Promise<void> {
+  const response = await apiResponse(endpoint, options, true);
+  const reader = response.body?.getReader();
+  if (!reader) throw connectionProblem();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  for (;;) {
+    let chunk: ReadableStreamReadResult<Uint8Array>;
+    try {
+      chunk = await reader.read();
+    } catch {
+      throw connectionProblem();
+    }
+    if (chunk.done) return;
+    buffer += decoder.decode(chunk.value, { stream: true });
+    for (let end = buffer.indexOf("\n\n"); end >= 0; end = buffer.indexOf("\n\n")) {
+      const block = buffer.slice(0, end);
+      buffer = buffer.slice(end + 2);
+      let event = "message";
+      const data: string[] = [];
+      for (const line of block.split("\n")) {
+        if (line.startsWith("event:")) event = line.slice(6).trim();
+        else if (line.startsWith("data:")) data.push(line.slice(5).trimStart());
+      }
+      if (!data.length) continue;
+      let parsed: unknown;
+      try {
+        parsed = JSON.parse(data.join("\n"));
+      } catch {
+        continue;
+      }
+      onEvent(event, parsed);
+    }
+  }
+}
+
+/** The request itself: headers, the CSRF token and the error format shared by every call. */
+async function apiResponse(
+  endpoint: string,
+  options: RequestInit,
+  retryWithFreshToken: boolean
+): Promise<Response> {
   purgeLegacyTokens();
   const headers = new Headers(options.headers || {});
   const method = (options.method ?? "GET").toUpperCase();
@@ -118,10 +181,7 @@ export async function apiFetch<T>(
     try {
       headers.set(CSRF_HEADER, await getCsrfToken());
     } catch {
-      throw new ApiException({
-        code: "NETWORK_ERROR",
-        message: inPageLanguage("تعذر الاتصال بالخادم، يرجى المحاولة مرة أخرى.", "Couldn't reach the server. Please try again."),
-      }, 0);
+      throw connectionProblem();
     }
   }
 
@@ -136,19 +196,11 @@ export async function apiFetch<T>(
   } catch (error) {
     // A cancelled request stays a cancellation; anything else is a connection problem.
     if (error instanceof DOMException && error.name === "AbortError") throw error;
-    throw new ApiException({
-      code: "NETWORK_ERROR",
-      message: inPageLanguage("تعذر الاتصال بالخادم، يرجى المحاولة مرة أخرى.", "Couldn't reach the server. Please try again."),
-    }, 0);
+    throw connectionProblem();
   }
-
-  if (response.status === 204) {
-    return {} as T;
-  }
-
-  const data = await response.json().catch(() => ({}));
 
   if (!response.ok) {
+    const data = await response.json().catch(() => ({}));
     const errorObj = data?.detail?.error || data?.error || {
       code: "API_ERROR",
       message: inPageLanguage("حدث خطأ غير متوقع، يرجى المحاولة مرة أخرى.", "Something went wrong. Please try again."),
@@ -156,14 +208,14 @@ export async function apiFetch<T>(
     // The browser's CSRF cookie expired or was cleared: get a fresh token and retry once.
     if (response.status === 403 && errorObj.code === "CSRF_TOKEN_INVALID" && retryWithFreshToken) {
       csrfTokenRequest = null;
-      return apiFetch<T>(endpoint, options, false);
+      return apiResponse(endpoint, options, false);
     }
     // The table was closed or the visit expired: the page tells the guest (VisitStatus).
     if (response.status === 401 && errorObj.code === "SESSION_EXPIRED") announceVisitEnded();
     throw new ApiException(errorObj, response.status);
   }
 
-  return data as T;
+  return response;
 }
 
 export interface CustomerSessionContext {

@@ -13,6 +13,8 @@
  * woken up again, and a phone that paused its audio asks for a tap to resume.
  */
 import { type MicHandle, PcmPlayer, createAudioContext, startMicrophone } from "./voiceAudio";
+import type { LineUnit } from "./units";
+import type { DoneEntry } from "./assistantDone";
 
 export type LiveCallState = "connecting" | "listening" | "speaking" | "thinking" | "reconnecting" | "ended" | "failed";
 
@@ -21,7 +23,7 @@ export interface LiveOrderAction {
   order_number?: string;
   draft_version?: number;
   summary?: {
-    items?: Array<{ name_ar: string; name_en?: string; quantity: number; line_total_display_ar: string; line_total_display_en?: string }>;
+    items?: Array<{ name_ar: string; name_en?: string; quantity: number; line_total_display_ar: string; line_total_display_en?: string } & LineUnit>;
     item_count?: number;
     total_display_ar?: string;
     total_display_en?: string;
@@ -34,6 +36,8 @@ export interface LiveCallEvents {
   onTurnComplete?: () => void;
   onTool?: (name: string) => void;
   onAction?: (action: LiveOrderAction) => void;
+  /** What the waiter's reply really did (the server's record). */
+  onDone?: (done: DoneEntry[]) => void;
   onDraft?: (draft: { item_count?: number; total_display_ar?: string } | null) => void;
   onConfirmFailed?: (errorCode: string | null) => void;
   onLevel?: (level: number) => void;
@@ -269,6 +273,9 @@ export class LiveVoiceCall {
         break;
       case "action":
         this.events.onAction?.(message.action as LiveOrderAction);
+        break;
+      case "done":
+        this.events.onDone?.(Array.isArray(message.done) ? (message.done as DoneEntry[]) : []);
         break;
       case "draft":
         this.events.onDraft?.((message.draft as never) ?? null);

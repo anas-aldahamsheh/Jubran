@@ -3,7 +3,7 @@
 import { useEffect, useRef, useState } from "react";
 import { AnimatePresence, motion } from "motion/react";
 import {
-  BellRing, Check, ChefHat, Clock3, ConciergeBell, Hand, Layers, LoaderCircle,
+  BellRing, Check, ChefHat, Clock3, ConciergeBell, Hand, HandPlatter, Layers, LoaderCircle,
   MessageSquareWarning, Pencil, ReceiptText, Send, SprayCan, Star, Trash2,
 } from "lucide-react";
 import { CurrentOrder } from "@/components/customer/CurrentOrder";
@@ -19,13 +19,15 @@ import { SentOrdersSkeleton } from "@/components/customer/GuestSkeletons";
 import { Sheet, SheetBody, SheetFooter, SheetHeader } from "@/components/ui/Sheet";
 import { QuantityStepper } from "@/components/ui/QuantityStepper";
 import { StatusPill, type PillTone } from "@/components/ui/StatusPill";
+import { UnitTag } from "@/components/ui/UnitTag";
 import { ButtonSpinner, LoadError, Reveal, SlowNote } from "@/components/ui/Feedback";
 import { useAutoRetry } from "@/lib/useAutoRetry";
 import { Toast } from "@/components/ui/Toast";
 import { formatTableNumber } from "@/lib/useTableNumber";
+import { unitLabel, type LineUnit } from "@/lib/units";
 import { EASE_OUT, spring } from "@/lib/motion";
 
-interface OrderItem {
+interface OrderItem extends LineUnit {
   item_id?: string;
   added_later?: boolean;
   name_ar: string;
@@ -42,9 +44,7 @@ interface OrderSummary {
   order_id: string;
   order_number: string;
   version?: number;
-  /** This guest's own order (only those can be changed). */
-  mine?: boolean;
-  /** Still changeable: the guest's own order, not ready or served yet. */
+  /** Still changeable: not ready or served yet. (Guests only ever see their own orders.) */
   editable?: boolean;
   amended?: boolean;
   cancelled_by_guest?: boolean;
@@ -242,6 +242,7 @@ export default function CustomerOrdersPage() {
       title: t("إلغاء طلب الخدمة", "Cancel service request"),
       tone: "danger",
       confirmLabel: t("إلغاء الطلب", "Cancel request"),
+      cancelLabel: t("رجوع", "Go back"),
     })) return;
 
     try {
@@ -252,6 +253,7 @@ export default function CustomerOrdersPage() {
       setTimeout(() => setRequestFeedback(null), 3500);
     } catch (err: unknown) {
       if (err instanceof ApiException) void showAlert(err.message);
+      void fetchServiceRequests(); // e.g. the staff finished it meanwhile: show it as it is now
     } finally {
       setCancellingRequestId(null);
     }
@@ -315,8 +317,7 @@ export default function CustomerOrdersPage() {
     }
   };
 
-  // Exactly three states for guests: awaiting confirmation, preparing, ready.
-  // Being served at the table does not add a fourth state (the order stays "ready").
+  // The same four states as the staff screens: awaiting confirmation, preparing, ready, delivered.
   const getStatusBadge = (order: OrderSummary) => {
     if (order.status === "CANCELLED") {
       return { bg: "bg-stone-50 border-stone-200 text-stone-800", dot: "bg-stone-500", label: t("أُلغي الطلب", "Order cancelled") };
@@ -341,7 +342,7 @@ export default function CustomerOrdersPage() {
         return {
           bg: "bg-green-50 border-green-200 text-green-800",
           dot: "bg-green-600",
-          label: t("جاهز", "Ready"),
+          label: order.is_served ? t("تم التسليم", "Delivered") : t("جاهز", "Ready"),
         };
       default:
         return {
@@ -360,13 +361,15 @@ export default function CustomerOrdersPage() {
     if (order.status === "READY") return { tone: "success", pulse: false };
     return { tone: "neutral", pulse: false };
   };
-  // The guest sees three steps; being served at the table keeps the order on "ready".
+  // Four steps, like the staff screens; once delivered, the last one is ticked too.
   const orderStep = (order: OrderSummary): number | null =>
-    order.status === "PENDING_APPROVAL" ? 0 : order.status === "PREPARING" ? 1 : order.status === "READY" ? 2 : null;
+    order.status === "PENDING_APPROVAL" ? 0 : order.status === "PREPARING" ? 1
+      : order.status === "READY" ? (order.is_served ? 3 : 2) : null;
   const steps = [
     { icon: Clock3, label: t("استلمنا طلبك", "Received") },
     { icon: ChefHat, label: t("في المطبخ", "In the kitchen") },
     { icon: BellRing, label: t("جاهز", "Ready") },
+    { icon: HandPlatter, label: t("تم التسليم", "Delivered") },
   ];
   const serviceItems = [
     { type: "STAFF", label: t("طلب موظف", "Call staff"), icon: Hand },
@@ -501,7 +504,7 @@ export default function CustomerOrdersPage() {
                           >
                             {isOpen ? t("بانتظار التأكيد", "Awaiting confirmation") : isInProgress ? t("قيد التحضير", "In progress") : isCancelled ? (request.cancelled_with_visit ? t("أُلغي بسبب إنهاء الزيارة", "Cancelled when the visit ended") : t("أُلغي", "Cancelled")) : t("تمت الخدمة", "Completed")}
                           </StatusPill>
-                          {isOpen && request.can_cancel && (
+                          {request.can_cancel && (
                             <button
                               type="button"
                               onClick={() => void handleCancelServiceRequest(request)}
@@ -537,31 +540,32 @@ export default function CustomerOrdersPage() {
                         <div className="flex flex-wrap items-center gap-2">
                           <span className="rounded-xl bg-surface-3 px-2.5 py-1 font-mono text-sm font-bold tracking-tight text-ink" dir="ltr">{ord.order_number}</span>
                           <time className="text-xs text-subtle">{timeOf(ord.created_at)}</time>
-                          {ord.mine === false && <StatusPill tone="neutral" size="sm">{t("طلب ضيف آخر", "Another guest's order")}</StatusPill>}
                           {ord.amended && ord.status !== "CANCELLED" && <StatusPill tone="info" size="sm">{t("معدّل", "Changed")}</StatusPill>}
                         </div>
                         <StatusPill tone={tone} dot pulse={pulse}>{badge.label}</StatusPill>
                       </div>
 
-                      {/* Progress: received → in the kitchen → ready */}
+                      {/* Progress: received → in the kitchen → ready → delivered (all ticked once delivered) */}
                       {step !== null && (
                         <div className="px-5 pb-4">
-                          <div className="relative flex items-start justify-between">
-                            <div className="absolute inset-x-5 top-4 h-1 rounded-full bg-surface-3" aria-hidden="true">
+                          <div className="relative flex items-start">
+                            {/* Runs between the first and last step's centres (half a step's width in from each side). */}
+                            <div className="absolute top-4 h-1 rounded-full bg-surface-3" style={{ insetInline: `${50 / steps.length}%` }} aria-hidden="true">
                               <motion.div
                                 className="h-full rounded-full bg-gradient-to-r from-brand to-leaf rtl:bg-gradient-to-l"
                                 style={{ originX: dir === "rtl" ? 1 : 0 }}
                                 initial={{ scaleX: 0 }}
-                                animate={{ scaleX: step / 2 }}
+                                animate={{ scaleX: step / (steps.length - 1) }}
                                 transition={{ duration: 0.9, ease: EASE_OUT, delay: 0.15 }}
                               />
                             </div>
                             {steps.map((item, index) => {
-                              const done = index < step;
-                              const current = index === step;
+                              const finished = step === steps.length - 1;
+                              const done = index < step || finished;
+                              const current = index === step && !finished;
                               const StepIcon = done ? Check : item.icon;
                               return (
-                                <div key={item.label} className="relative z-[1] flex w-20 flex-col items-center gap-1.5 text-center">
+                                <div key={item.label} className="relative z-[1] flex min-w-0 flex-1 flex-col items-center gap-1.5 text-center">
                                   <motion.span
                                     initial={false}
                                     animate={{ scale: current ? 1.08 : 1 }}
@@ -585,6 +589,7 @@ export default function CustomerOrdersPage() {
                               <p className="font-semibold text-ink">
                                 <span className="me-1.5 tabular-nums text-brand">{it.quantity}×</span>
                                 {inLang(it.name_ar, it.name_en)}
+                                <UnitTag label={unitLabel(it, lang)} className="ms-1.5" />
                                 {it.added_later && <StatusPill tone="accent" size="sm" className="ms-2 align-middle">{t("أُضيف لاحقاً", "Added later")}</StatusPill>}
                               </p>
                               {it.note && <p className="mt-0.5 text-xs text-accent-ink">{t("ملاحظة: ", "Note: ")}{it.note}</p>}
@@ -663,25 +668,33 @@ export default function CustomerOrdersPage() {
               <div className="grid grid-cols-2 gap-2.5 sm:grid-cols-4 lg:grid-cols-2">
                 {serviceItems.map((srv) => {
                   const isPending = serviceRequests.some((request) => request.type === srv.type && (request.status === "OPEN" || request.status === "IN_PROGRESS"));
+                  // The guest's own request on its way: tapping it again offers to cancel it.
+                  const ownPending = serviceRequests.find((request) => request.type === srv.type && request.can_cancel);
+                  const cancelling = ownPending !== undefined && cancellingRequestId === ownPending.request_id;
                   const Icon = srv.icon;
                   return (
                     <motion.button
                       key={srv.type}
                       type="button"
                       whileTap={{ scale: 0.96 }}
-                      onClick={() => handleQuickService(srv.type, srv.label)}
-                      disabled={requestSending || isPending}
-                      aria-busy={sendingService === srv.type}
-                      className={`relative flex min-h-[5.5rem] flex-col items-start justify-between gap-2 rounded-2xl border p-3.5 text-start transition-colors disabled:cursor-not-allowed ${isPending ? "border-warning/30 bg-warning-soft" : sendingService === srv.type ? "border-brand-line bg-brand-soft/60" : "border-line bg-surface-2 hover:border-brand-line hover:bg-brand-soft/60 disabled:opacity-60"}`}
+                      onClick={() => ownPending ? void handleCancelServiceRequest(ownPending) : handleQuickService(srv.type, srv.label)}
+                      disabled={requestSending || cancellingRequestId !== null || (isPending && !ownPending)}
+                      aria-busy={sendingService === srv.type || cancelling}
+                      className={`relative flex min-h-[5.5rem] flex-col items-start justify-between gap-2 rounded-2xl border p-3.5 text-start transition-colors disabled:cursor-not-allowed ${isPending ? `border-warning/30 bg-warning-soft ${ownPending ? "hover:border-danger/30" : ""}` : sendingService === srv.type ? "border-brand-line bg-brand-soft/60" : "border-line bg-surface-2 hover:border-brand-line hover:bg-brand-soft/60 disabled:opacity-60"}`}
                     >
-                      {sendingService === srv.type
-                        ? <ButtonSpinner className="size-5 text-brand" />
+                      {sendingService === srv.type || cancelling
+                        ? <ButtonSpinner className={`size-5 ${cancelling ? "text-warning-ink" : "text-brand"}`} />
                         : <Icon className={`size-5 ${isPending ? "text-warning-ink" : "text-brand"}`} aria-hidden="true" />}
                       <span className="text-sm font-semibold leading-tight text-ink">{srv.label}</span>
                       {isPending && (
-                        <span className="flex items-center gap-1.5 text-[0.6875rem] font-bold text-warning-ink">
-                          <span className="size-1.5 animate-pulse rounded-full bg-warning" aria-hidden="true" />
-                          {t("قيد التنفيذ", "In progress")}
+                        <span className="flex w-full items-center justify-between gap-1.5 text-[0.6875rem] font-bold text-warning-ink">
+                          <span className="flex items-center gap-1.5">
+                            <span className="size-1.5 animate-pulse rounded-full bg-warning" aria-hidden="true" />
+                            {t("قيد التنفيذ", "In progress")}
+                          </span>
+                          {ownPending && (
+                            <span className="rounded-full border border-danger/25 bg-surface px-2 py-0.5 text-danger-ink">{t("إلغاء", "Cancel")}</span>
+                          )}
                         </span>
                       )}
                     </motion.button>

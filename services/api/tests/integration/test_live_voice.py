@@ -164,7 +164,7 @@ async def test_a_voice_order_goes_through_the_chat_assistant_and_its_rules(visit
     script_model(monkeypatch, [
         # Message 1: the guest orders tea; the chat assistant adds it and shows the summary...
         model_response(model_call("search_knowledge", query="شاي", source_types=["product"])),
-        model_response(model_call("update_draft_order", operations=[{"op": "add", "product_id": ids["tea"], "quantity": 1}])),
+        model_response(model_call("update_draft_order", operations=[{"op": "add", "product_id": ids["tea"], "quantity": 1, "guest_gave_quantity": True}])),
         *summary_calls(),
         # ...and tries to send it in the same message: the server refuses.
         model_response(model_call("submit_order", confirmed_summary=True, guest_words="وخلص")),
@@ -175,7 +175,7 @@ async def test_a_voice_order_goes_through_the_chat_assistant_and_its_rules(visit
         model_response(text="تم إرسال طلبك."),
     ])
     provider = FakeProvider([
-        heard("بدي شاي", 1000), heard(" وخلص", 1400), delegate("d1", 1800), 1,
+        heard("بدي شاي واحد", 1000), heard(" وخلص", 1400), delegate("d1", 1800), 1,
         audio(b"\x02\x00" * 1200), spoke("طلبك شاي واحد، بتأكد؟"),
         heard("آه أكد", 5000), delegate("d2", 5600), 2,
     ])
@@ -198,7 +198,7 @@ async def test_a_voice_order_goes_through_the_chat_assistant_and_its_rules(visit
         state = await ConversationStore.load(db, ids["customer"])
         row = (await db.execute(select(AssistantConversationModel))).scalar_one()
     # The guest's words (joined as heard) and the replies are the visit's conversation, as in text chat.
-    assert [m["content"] for m in state.history] == ["بدي شاي وخلص", "طلبك شاي واحد. بتأكد؟", "آه أكد", "تم إرسال طلبك."]
+    assert [m["content"] for m in state.history] == ["بدي شاي واحد وخلص", "طلبك شاي واحد. بتأكد؟", "آه أكد", "تم إرسال طلبك."]
     assert row.busy_lease is None
     assert "Delegation policy" in provider.instruction and "Greet the guest" in session.instructions[0]
 
@@ -208,7 +208,7 @@ async def test_the_confirm_button_works_during_a_call(visit, monkeypatch):
     factory, ids = visit
     script_model(monkeypatch, [
         model_response(model_call("search_knowledge", query="شاي", source_types=["product"])),
-        model_response(model_call("update_draft_order", operations=[{"op": "add", "product_id": ids["tea"], "quantity": 2}])),
+        model_response(model_call("update_draft_order", operations=[{"op": "add", "product_id": ids["tea"], "quantity": 2, "guest_gave_quantity": True}])),
         *summary_calls(),
         model_response(text="ملخص طلبك: 2 شاي. بتأكد؟"),
     ], [model_response(text="تمام، طلبك وصل المطبخ.")])  # the chat model words the confirmation

@@ -15,12 +15,12 @@ async def seated_with_summary(client, db_session, monkeypatch, *later_turns):
     tea = (await db_session.execute(select(ProductModel).where(ProductModel.name_ar == "شاي"))).scalar_one()
     script_model(monkeypatch,
         [model_response(model_call("search_knowledge", query="شاي", source_types=["product"])),
-         model_response(model_call("update_draft_order", operations=[{"op": "add", "product_id": tea.id, "quantity": 1}])),
+         model_response(model_call("update_draft_order", operations=[{"op": "add", "product_id": tea.id, "quantity": 1, "guest_gave_quantity": True}])),
          *summary_calls(),
          model_response(text="هذا ملخص طلبك. هل تؤكد؟")],
         *later_turns,
     )
-    shown = await client.post("/api/v1/assistant/chat", json={"message": "بدي شاي وخلص"})
+    shown = await client.post("/api/v1/assistant/chat", json={"message": "بدي شاي واحد وخلص"})
     assert shown.json()["action"]["type"] == "AWAITING_ORDER_CONFIRMATION"
     return (await client.get("/api/v1/session/context")).json()["customer_session_id"]
 

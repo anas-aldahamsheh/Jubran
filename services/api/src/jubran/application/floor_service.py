@@ -20,6 +20,7 @@ from jubran.domain.money import format_jod
 from jubran.application.ai.conversation_store import ConversationStore
 from jubran.application.order_amendment_service import GUEST_CANCEL_NOTE, amendment_payload
 from jubran.application.events import record_event
+from jubran.application.serving_units import line_unit_fields
 from jubran.settings import settings
 
 # The floor screen shows handled orders/requests from this recent window only.
@@ -119,6 +120,7 @@ class FloorService:
                         "name_ar": item.product_name_snapshot_ar,
                         "name_en": item.product_name_snapshot_en or item.product_name_snapshot_ar,
                         "quantity": item.quantity,
+                        **line_unit_fields(item.unit, item.product_name_snapshot_ar, item.product_name_snapshot_en),
                         "note": item.note,
                         "unit_price_display": format_jod(item.unit_price_minor_snapshot, "ar"),
                         "unit_price_display_en": format_jod(item.unit_price_minor_snapshot, "en"),
@@ -360,8 +362,11 @@ class FloorService:
         drafts = [draft for s in active_sessions for customer in s.customer_sessions for draft in customer.draft_orders if draft.status == DraftStatus.OPEN]
         service_names = {ServiceRequestType.STAFF: "طلب موظف", ServiceRequestType.TISSUES: "مناديل إضافية", ServiceRequestType.CLEAN_TABLE: "تنظيف الطاولة", ServiceRequestType.BILL: "طلب الحساب"}
 
+        def line(item):
+            return f"{item.quantity}× {item.product_name_snapshot_ar}" + (f" · {item.unit}" if item.unit else "")
+
         def describe(orders):
-            return "، ".join(f"{o.order_number} ({', '.join(f'{i.quantity}× {i.product_name_snapshot_ar}' for i in o.items)})" for o in orders)
+            return "، ".join(f"{o.order_number} ({', '.join(line(i) for i in o.items)})" for o in orders)
 
         note_parts = []
         if cancelled_orders:
@@ -468,7 +473,9 @@ class FloorService:
                 "amendments": [amendment_payload(amendment) for amendment in order.amendments],
                 "items": [{"name_ar": item.product_name_snapshot_ar, "added_later": item.added_at is not None,
                            "name_en": item.product_name_snapshot_en or item.product_name_snapshot_ar,
-                           "quantity": item.quantity} for item in order.items],
+                           "quantity": item.quantity,
+                           **line_unit_fields(item.unit, item.product_name_snapshot_ar, item.product_name_snapshot_en)}
+                          for item in order.items],
             } for order in orders],
             "services": [{"id": item.id, "type": item.type.value, "status": item.status.value, "created_at": item.created_at.isoformat(), "closure_note": item.closure_note} for item in services],
             "complaints": [{"id": item.id, "message": item.message, "status": item.status.value, "created_at": item.created_at.isoformat(), "closure_note": item.closure_note} for item in complaints],

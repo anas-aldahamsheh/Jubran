@@ -1,10 +1,14 @@
 """Pydantic Request and Response Schemas for HTTP API."""
-from typing import Literal, Optional, List
+from typing import Annotated, Literal, Optional, List
 from pydantic import BaseModel, EmailStr, Field
 
-# A dish picture link may only point at this website's own images (e.g. /images/hummus.png):
+from jubran.domain.units import MAX_UNIT_LENGTH, MAX_UNITS
+
+# A dish picture link may only point at this website's own images (e.g. /images/hummus.png, or
+# a dish photo stored here, which the dish already links to and the edit form sends back):
 # no outside addresses that could track guests or show someone else's content.
-SITE_IMAGE_PATH = r"^$|^/[A-Za-z0-9._~-][A-Za-z0-9._~/-]*\.(?i:png|jpe?g|webp|gif|avif|svg)$"
+SITE_IMAGE_PATH = (r"^$|^/[A-Za-z0-9._~-][A-Za-z0-9._~/-]*\.(?i:png|jpe?g|webp|gif|avif|svg)$"
+                   r"|^/api/v1/menu/products/[0-9A-Fa-f-]{36}/images/[0-9A-Fa-f-]{36}$")
 
 
 # Auth Schemas
@@ -80,6 +84,8 @@ class AddItemRequest(BaseModel):
     product_id: str
     quantity: int = Field(default=1, ge=1, le=50)
     note: Optional[str] = Field(default=None, max_length=200)
+    # One of the dish's units (needed when it has several, e.g. a plate or a box).
+    unit: Optional[str] = Field(default=None, max_length=MAX_UNIT_LENGTH)
 
 
 class UpdateItemRequest(BaseModel):
@@ -99,6 +105,7 @@ class OrderChange(BaseModel):
     item_id: Optional[str] = Field(default=None, max_length=36)
     quantity: Optional[int] = Field(default=None, ge=0, le=50)
     note: Optional[str] = Field(default=None, max_length=200)
+    unit: Optional[str] = Field(default=None, max_length=MAX_UNIT_LENGTH)
 
 
 class AmendOrderRequest(BaseModel):
@@ -112,6 +119,10 @@ class UpdateProductAvailabilityRequest(BaseModel):
     is_available: bool
 
 
+# A dish's serving units as the admin writes them ("صحن", "علبة"...); empty means automatic.
+DishUnits = Annotated[List[Annotated[str, Field(max_length=MAX_UNIT_LENGTH)]], Field(max_length=MAX_UNITS)]
+
+
 class CreateProductRequest(BaseModel):
     category_id: str = Field(min_length=1)
     name_ar: str = Field(min_length=1, max_length=150)
@@ -121,6 +132,7 @@ class CreateProductRequest(BaseModel):
     price_minor: int = Field(gt=0)
     is_available: bool = Field(default=True)
     image_asset_url: Optional[str] = Field(default=None, max_length=255, pattern=SITE_IMAGE_PATH)
+    units: Optional[DishUnits] = None
 
 
 class UpdateProductRequest(BaseModel):
@@ -132,6 +144,8 @@ class UpdateProductRequest(BaseModel):
     price_minor: Optional[int] = Field(default=None, gt=0)
     is_available: Optional[bool] = Field(default=None)
     image_asset_url: Optional[str] = Field(default=None, max_length=255, pattern=SITE_IMAGE_PATH)
+    # [] goes back to the automatic unit; left out keeps the saved units.
+    units: Optional[DishUnits] = None
 
 
 class OpeningHourInput(BaseModel):

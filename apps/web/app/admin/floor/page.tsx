@@ -18,16 +18,18 @@ import { Sheet, SheetBody, SheetFooter, SheetHeader } from "@/components/ui/Shee
 import { SegmentedControl } from "@/components/ui/SegmentedControl";
 import { StatusPill } from "@/components/ui/StatusPill";
 import { Toast } from "@/components/ui/Toast";
+import { UnitTag } from "@/components/ui/UnitTag";
 import { ButtonSpinner, Skeleton } from "@/components/ui/Feedback";
 import { useAutoRetry } from "@/lib/useAutoRetry";
 import { useScrollRow } from "@/lib/useScrollRow";
 import { ScrollRowArrows } from "@/components/ui/ScrollRowArrows";
+import { unitLabel, type LineUnit } from "@/lib/units";
 import { EASE_OUT, fadeUp, spring, stagger } from "@/lib/motion";
 import { AddedLaterTag, OrderChangeNotice, type OrderAmendment } from "@/components/admin/OrderChanges";
 import { TableGuests } from "@/components/admin/TableGuests";
 import Image from "next/image";
 
-interface OrderItem {
+interface OrderItem extends LineUnit {
   item_id?: string;
   added_later?: boolean;
   name_ar: string;
@@ -138,6 +140,12 @@ function localized(lang: Language, ar: string, en?: string | null): string {
   return lang === "en" && en ? en : ar;
 }
 
+/** A line as text, with how it's served: "2× Hummus · box". */
+function lineText(lang: Language, item: { quantity: number; name_ar: string; name_en?: string } & LineUnit): string {
+  const unit = unitLabel(item, lang);
+  return `${item.quantity}× ${localized(lang, item.name_ar, item.name_en)}${unit ? ` · ${unit}` : ""}`;
+}
+
 /** English count with the right noun: "1 order", "3 orders". */
 function countEn(count: number, one: string, many: string): string {
   return `${count} ${count === 1 ? one : many}`;
@@ -175,7 +183,7 @@ interface CustomerHistory {
   session_status: "ACTIVE" | "CLOSED";
   session_started_at: string;
   session_closed_at?: string | null;
-  orders: { order_id: string; order_number: string; status: string; is_served: boolean; created_at: string; total_display: string; total_display_en?: string; closure_note?: string | null; items: { name_ar: string; name_en?: string; quantity: number }[] }[];
+  orders: { order_id: string; order_number: string; status: string; is_served: boolean; created_at: string; total_display: string; total_display_en?: string; closure_note?: string | null; items: ({ name_ar: string; name_en?: string; quantity: number } & LineUnit)[] }[];
   services: { id: string; type: string; status: string; created_at: string; closure_note?: string | null }[];
   complaints: { id: string; message: string; status: string; created_at: string; closure_note?: string | null }[];
   drafts: { id: string; status: string; created_at: string; updated_at: string }[];
@@ -304,6 +312,7 @@ function IncomingOrderCard({ ord, busy, pending, onStartPreparing, onMarkReady, 
           <li key={idx} className="flex items-start justify-between gap-2 text-[0.8125rem]">
             <div className="min-w-0">
               <span className="font-semibold text-ink"><span className="tabular-nums text-brand">{it.quantity}×</span> {localized(lang, it.name_ar, it.name_en)}</span>
+              <UnitTag label={unitLabel(it, lang)} className="ms-1.5" />
               <AddedLaterTag show={it.added_later} />
               {it.note && <span className="block text-xs text-accent-ink">{t("ملاحظة:", "Note:")} {it.note}</span>}
             </div>
@@ -531,14 +540,14 @@ export default function AdminFloorPage() {
     const kitchenOrders = unfinishedOrders.filter((order) => order.status === "PREPARING" || order.status === "READY");
     const unfinishedServices = currentTableServices.filter((request) => request.status === "OPEN" || request.status === "IN_PROGRESS");
     const openComplaints = currentTableComplaints.filter((complaint) => complaint.status === "OPEN" || complaint.status === "IN_PROGRESS");
-    const describeOrder = (order: OrderSummary) => `• ${order.order_number}: ${order.items.map((item) => `${item.quantity}× ${localized(lang, item.name_ar, item.name_en)}`).join(t("، ", ", "))}`;
+    const describeOrder = (order: OrderSummary) => `• ${order.order_number}: ${order.items.map((item) => lineText(lang, item)).join(t("، ", ", "))}`;
     const serviceNames: Record<string, string> = { STAFF: t("طلب موظف", "Staff call"), TISSUES: t("مناديل إضافية", "Extra tissues"), CLEAN_TABLE: t("تنظيف الطاولة", "Clean the table"), BILL: t("طلب الحساب", "Bill request") };
 
     const sections: string[] = [];
     if (kitchenOrders.length) sections.push(`${t("طلبات قيد التحضير أو جاهزة ولم تُسلَّم:", "Orders being prepared or ready but not served:")}\n${kitchenOrders.map(describeOrder).join("\n")}`);
     if (pendingOrders.length) sections.push(`${t("طلبات لم يبدأ تحضيرها (ستُلغى):", "Orders not started yet (will be cancelled):")}\n${pendingOrders.map(describeOrder).join("\n")}`);
     if (unfinishedServices.length) sections.push(`${t("طلبات خدمة مفتوحة (ستُلغى):", "Open service requests (will be cancelled):")}\n${unfinishedServices.map((request) => `• ${serviceNames[request.type] ?? t("طلب خدمة", "Service request")}`).join("\n")}`);
-    if (openComplaints.length) sections.push(`${t("شكاوى مفتوحة (ستبقى في قائمة المتابعة):", "Open complaints (will stay on the follow-up list):")}\n${openComplaints.map((complaint) => `• ${complaint.message}`).join("\n")}`);
+    if (openComplaints.length) sections.push(`${t("شكاوى مفتوحة (ستبقى في قائمة المتابعة):", "Open complaints (will stay on the follow-up list):")}\n${openComplaints.map((complaint) => `• ${complaint.message.replace(/\n/g, "\n   ")}`).join("\n")}`);
     const summary = sections.length
       ? `${t(`على طاولة ${tableNumber}:`, `At table ${tableNumber}:`)}\n\n${sections.join("\n\n")}`
       : t(`هل أنت متأكد من إنهاء جلسة طاولة ${tableNumber} وتفريغها للزبائن الجدد؟`, `End the visit at table ${tableNumber} and free it for new guests?`);
@@ -1093,7 +1102,7 @@ export default function AdminFloorPage() {
                             </div>
                           </div>
                           <div className="flex items-center justify-between gap-2 border-t border-line pt-3 text-xs">
-                            <span className={`rounded-full px-2.5 py-1 text-[0.6875rem] font-bold ${statusStyle.pillBg}`}>
+                            <span className={`whitespace-nowrap rounded-full px-2.5 py-1 text-[0.6875rem] font-bold ${statusStyle.pillBg}`}>
                               {statusStyle.text}
                             </span>
                             <span className="font-semibold text-muted">
@@ -1208,9 +1217,10 @@ export default function AdminFloorPage() {
                             width: TABLE_HOTSPOT_WIDTH,
                             height: TABLE_HOTSPOT_HEIGHT,
                           }}
+                          // Each table is its own layer: the hovered one goes on top, or its card hides under the tables after it.
                           className={`absolute cursor-pointer flex items-center justify-center transition-all duration-200 group animate-in fade-in zoom-in-95 ${
                             isFilteredOut ? "opacity-25 grayscale" : "opacity-100"
-                          } ${isSelected ? "z-30 scale-110" : "z-20 hover:scale-105"}`}
+                          } ${isSelected ? "z-30 scale-110" : `${isHovered ? "z-40" : "z-20"} hover:scale-105`}`}
                         >
                           {/* 3D Isometric Table Footprint Aura & Glow */}
                           <div
@@ -1272,13 +1282,13 @@ export default function AdminFloorPage() {
                             </div>
 
                             {/* Small maps show the number and colour only; the details open on tap. */}
-                            <span className={`mt-1 hidden @2xl:block rounded-full px-2 py-0.5 text-[10px] font-black leading-tight shadow-sm ${statusStyle.pillBg}`}>
+                            <span className={`mt-1 hidden @2xl:block whitespace-nowrap rounded-full px-2 py-0.5 text-[10px] font-black leading-tight shadow-sm ${statusStyle.pillBg}`}>
                               {statusStyle.text}
                             </span>
 
                             {/* Open orders (not yet served) */}
                             {openOrders.length > 0 && (
-                              <span className="mt-1 hidden @2xl:block rounded-full bg-amber-300 px-2 py-0.5 text-[9px] font-black leading-tight text-[#201d19] shadow-sm">
+                              <span className="mt-1 hidden @2xl:block whitespace-nowrap rounded-full bg-amber-300 px-2 py-0.5 text-[9px] font-black leading-tight text-[#201d19] shadow-sm">
                                 {t(`${openOrders.length} طلب`, countEn(openOrders.length, "order", "orders"))}
                               </span>
                             )}
@@ -1527,7 +1537,7 @@ export default function AdminFloorPage() {
               <section className="space-y-3 rounded-2xl border border-line bg-surface-2 p-4 text-sm">
                 <div className="flex items-center justify-between gap-2">
                   <span className="text-muted">{t("الحالة التشغيلية:", "Current status:")}</span>
-                  <span className={`rounded-full px-2.5 py-1 text-xs font-bold ${getStatusStyles(getTableView(selectedTable)).pillBg}`}>
+                  <span className={`whitespace-nowrap rounded-full px-2.5 py-1 text-xs font-bold ${getStatusStyles(getTableView(selectedTable)).pillBg}`}>
                     {getStatusStyles(getTableView(selectedTable)).text}
                   </span>
                 </div>
@@ -1582,7 +1592,7 @@ export default function AdminFloorPage() {
                   {currentTableComplaints.map((c) => (
                     <div key={c.id} className={`flex items-start justify-between gap-2 rounded-xl border p-2.5 text-xs ${c.status === "CANCELLED" ? "border-line bg-surface-3" : "border-danger/30 bg-danger-soft"}`}>
                       <div className="min-w-0">
-                        <p className={`break-words font-semibold ${c.status === "CANCELLED" ? "text-ink-2" : "text-danger-ink"}`}>{c.message}</p>
+                        <p className={`whitespace-pre-line break-words font-semibold ${c.status === "CANCELLED" ? "text-ink-2" : "text-danger-ink"}`}>{c.message}</p>
                         <p className="mt-1 select-all break-all text-[0.6875rem] text-subtle" title={t(`معرّف العميل الكامل: ${c.customer_id}`, `Full customer ID: ${c.customer_id}`)}>{t("معرّف العميل:", "Customer ID:")} {c.customer_id}</p>
                         <time className="mt-1 block text-[0.6875rem] text-subtle" dateTime={c.created_at}>
                           {restaurantTime(c.created_at, timeLocale, { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" })}
@@ -1628,6 +1638,7 @@ export default function AdminFloorPage() {
                             <div key={i} className="flex items-center justify-between gap-2">
                               <span>
                                 <span className="font-bold tabular-nums text-ink">{it.quantity}×</span> {localized(lang, it.name_ar, it.name_en)}
+                                <UnitTag label={unitLabel(it, lang)} className="ms-1.5" />
                                 <AddedLaterTag show={it.added_later} />
                               </span>
                               <span className="font-medium tabular-nums">{localized(lang, it.line_total_display, it.line_total_display_en)}</span>
@@ -1708,7 +1719,7 @@ export default function AdminFloorPage() {
                 {customerHistory.orders.length ? customerHistory.orders.map((order) => (
                   <article key={order.order_id} className="mb-2 rounded-2xl border border-line bg-surface-2 p-3">
                     <div className="flex justify-between gap-2 font-bold text-ink"><span className="font-mono" dir="ltr">{order.order_number}</span><span className="text-xs">{order.status === "CANCELLED" ? t("أُلغي مع الجلسة", "Cancelled with the visit") : order.status === "PENDING_APPROVAL" ? t("بانتظار التأكيد", "Awaiting confirmation") : order.status === "PREPARING" ? t("قيد التحضير", "Preparing") : order.status === "READY" ? (order.is_served ? t("جاهز · تم التقديم", "Ready · served") : t("جاهز", "Ready")) : t("أُغلق مع الجلسة", "Closed with the visit")}</span></div>
-                    <p className="mt-1 text-muted">{order.items.map((item) => `${item.quantity}× ${localized(lang, item.name_ar, item.name_en)}`).join(t("، ", ", "))} · {localized(lang, order.total_display, order.total_display_en)}</p>
+                    <p className="mt-1 text-muted">{order.items.map((item) => lineText(lang, item)).join(t("، ", ", "))} · {localized(lang, order.total_display, order.total_display_en)}</p>
                     {order.closure_note && <p className="mt-2 rounded-xl bg-warning-soft p-2 text-xs text-warning-ink">{order.closure_note}</p>}
                     <time className="mt-1 block text-xs text-subtle">{restaurantTime(order.created_at, timeLocale)}</time>
                   </article>
@@ -1719,7 +1730,7 @@ export default function AdminFloorPage() {
                 {[...customerHistory.services.map((service) => ({ id: service.id, label: SERVICE_TYPE_LABELS[service.type]?.[lang] ?? service.type, status: service.status, created_at: service.created_at, message: "", closure_note: service.closure_note })), ...customerHistory.complaints.map((complaint) => ({ id: complaint.id, label: t("شكوى", "Complaint"), status: complaint.status, created_at: complaint.created_at, message: complaint.message, closure_note: complaint.closure_note }))].length ? (
                   [...customerHistory.services.map((service) => ({ id: service.id, label: SERVICE_TYPE_LABELS[service.type]?.[lang] ?? service.type, status: service.status, created_at: service.created_at, message: "", closure_note: service.closure_note })), ...customerHistory.complaints.map((complaint) => ({ id: complaint.id, label: t("شكوى", "Complaint"), status: complaint.status, created_at: complaint.created_at, message: complaint.message, closure_note: complaint.closure_note }))].map((item) => (
                     <article key={item.id} className="mb-2 flex items-start justify-between gap-3 rounded-2xl border border-line p-3">
-                      <div><p className="font-bold text-ink">{item.label}</p>{item.message && <p className="mt-1 text-muted">{item.message}</p>}{item.closure_note && <p className="mt-2 rounded-xl bg-warning-soft p-2 text-xs text-warning-ink">{item.closure_note}</p>}<time className="mt-1 block text-xs text-subtle">{restaurantTime(item.created_at, timeLocale)}</time></div>
+                      <div><p className="font-bold text-ink">{item.label}</p>{item.message && <p className="mt-1 whitespace-pre-line break-words text-muted">{item.message}</p>}{item.closure_note && <p className="mt-2 rounded-xl bg-warning-soft p-2 text-xs text-warning-ink">{item.closure_note}</p>}<time className="mt-1 block text-xs text-subtle">{restaurantTime(item.created_at, timeLocale)}</time></div>
                       <span className="shrink-0 text-xs font-bold text-ink-2">{item.status === "CANCELLED" ? t("ملغى", "Cancelled") : item.status === "RESOLVED" ? t("مكتمل", "Completed") : item.status === "IN_PROGRESS" ? t("قيد التنفيذ", "In progress") : t("جديد", "New")}</span>
                     </article>
                   ))

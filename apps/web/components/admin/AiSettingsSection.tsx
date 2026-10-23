@@ -9,7 +9,7 @@ import { ButtonSpinner } from "@/components/ui/Feedback";
 import { apiFetch, ApiException } from "@/lib/api";
 import { useLanguage } from "@/context/LanguageContext";
 
-export type Provider = "openai" | "gemini";
+export type Provider = "openai" | "gemini" | "anthropic";
 export type Purpose = "chat" | "embedding" | "transcription" | "voice";
 
 type SavedSetting = {
@@ -41,6 +41,7 @@ type Feedback = { text: string; error: boolean };
 const REASONING_LEVELS: Record<Provider, string[]> = {
   openai: ["none", "minimal", "low", "medium", "high", "xhigh", "max"],
   gemini: ["minimal", "low", "medium", "high"],
+  anthropic: ["low", "medium", "high", "max"],
 };
 
 function formFor(section: AiSection, provider?: Provider): Form {
@@ -51,7 +52,7 @@ function formFor(section: AiSection, provider?: Provider): Form {
     provider: chosen,
     model_id: saved?.model_id ?? section.suggested_models[chosen] ?? "",
     api_key: "",
-    thinking: (chosen === "openai" ? saved?.reasoning_effort : saved?.thinking_level) ?? "",
+    thinking: (chosen === "gemini" ? saved?.thinking_level : saved?.reasoning_effort) ?? "",
   };
 }
 
@@ -71,7 +72,7 @@ export function AiSettingsSection({ section, serverKeys, onChange }: {
   const voiceOn = isVoice && inUse.source === "saved";
   const savedHere = section.saved[form.provider];
   const providerName = (provider: Provider | null) =>
-    provider === "openai" ? (isVoice ? "OpenAI GPT-Live" : "OpenAI") : "Google Gemini";
+    provider === "openai" ? (isVoice ? "OpenAI GPT-Live" : "OpenAI") : provider === "anthropic" ? "Claude" : "Google Gemini";
 
   const copy = {
     chat: {
@@ -141,7 +142,7 @@ export function AiSettingsSection({ section, serverKeys, onChange }: {
     provider: form.provider,
     model_id: form.model_id.trim(),
     api_key: form.api_key.trim() || null,
-    reasoning_effort: purpose === "chat" && form.provider === "openai" ? form.thinking || null : null,
+    reasoning_effort: purpose === "chat" && form.provider !== "gemini" ? form.thinking || null : null,
     thinking_level: purpose === "chat" && form.provider === "gemini" ? form.thinking || null : null,
   });
 
@@ -253,7 +254,7 @@ export function AiSettingsSection({ section, serverKeys, onChange }: {
         {section.providers.length > 1 && (
           <div>
             <p id={`${purpose}-provider-label`} className={labelClass}>{t("المزوّد", "Provider")}</p>
-            <div className="grid grid-cols-2 gap-1 rounded-2xl border border-line bg-surface-3/70 p-1" role="group" aria-labelledby={`${purpose}-provider-label`}>
+            <div className={`grid ${section.providers.length > 2 ? "grid-cols-3" : "grid-cols-2"} gap-1 rounded-2xl border border-line bg-surface-3/70 p-1`} role="group" aria-labelledby={`${purpose}-provider-label`}>
               {section.providers.map((provider) => (
                 <button
                   key={provider}
@@ -267,7 +268,8 @@ export function AiSettingsSection({ section, serverKeys, onChange }: {
                   {form.provider === provider && (
                     <motion.span layoutId={`provider-${purpose}`} className="absolute inset-0 -z-10 rounded-xl border border-line bg-surface shadow-card" transition={spring.snappy} />
                   )}
-                  {providerName(provider)}
+                  {/* Three side by side on a phone: "Gemini" alone keeps every name on one line. */}
+                  {section.providers.length > 2 ? providerName(provider).replace("Google ", "") : providerName(provider)}
                   {section.saved[provider]?.has_api_key && <KeyRound className="size-3.5 text-success" aria-label={t("مفتاح محفوظ", "Key saved")} />}
                 </button>
               ))}

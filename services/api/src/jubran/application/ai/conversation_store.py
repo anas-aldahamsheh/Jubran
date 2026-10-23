@@ -54,17 +54,26 @@ class PendingAmendment:
 @dataclass
 class ConversationState:
     customer_session_id: str
-    history: List[Dict[str, str]] = field(default_factory=list)
+    # {"role", "content"}; an assistant reply also keeps what its turn really did ("done": see
+    # assistant_turn.done_entry) for the guest's screen and the model's next turn.
+    history: List[Dict[str, Any]] = field(default_factory=list)
     pending: Optional[PendingConfirmation] = None
     upsell_suggested: bool = False
     pending_amendment: Optional[PendingAmendment] = None
-    # product id -> {"name_ar", "name_en", "price_minor", "turn"}; see remember_products.
+    # product id -> {"name_ar", "name_en", "price_minor", "units", "turn"}; see remember_products.
     known_products: Dict[str, Dict[str, Any]] = field(default_factory=dict)
     turn: int = 0
 
-    def append(self, role: str, content: str) -> None:
-        self.history.append({"role": role, "content": content})
+    def append(self, role: str, content: str, done: Optional[List[Dict[str, Any]]] = None) -> None:
+        self.history.append({"role": role, "content": content, **({"done": done} if done else {})})
         self.history = self.history[-MAX_MESSAGES:]
+
+    def last_done(self) -> List[Dict[str, Any]]:
+        """What the latest reply really did (empty when it did nothing)."""
+        if self.history and self.history[-1].get("role") == "assistant":
+            done = self.history[-1].get("done")
+            return [entry for entry in done if isinstance(entry, dict)] if isinstance(done, list) else []
+        return []
 
     def start_turn(self) -> None:
         """A new guest turn: forget dishes shown too long ago."""
@@ -79,7 +88,8 @@ class ConversationState:
             if product_id:
                 self.known_products[product_id] = {
                     "name_ar": product.get("name_ar"), "name_en": product.get("name_en"),
-                    "price_minor": product.get("price_minor"), "turn": self.turn}
+                    "price_minor": product.get("price_minor"), "turn": self.turn,
+                    **({"units": product["units"]} if product.get("units") else {})}
         if len(self.known_products) > MAX_KNOWN_PRODUCTS:
             newest = sorted(self.known_products.items(), key=lambda item: item[1].get("turn", 0), reverse=True)
             self.known_products = dict(newest[:MAX_KNOWN_PRODUCTS])

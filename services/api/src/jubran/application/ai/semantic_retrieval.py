@@ -409,6 +409,8 @@ class SemanticKnowledgeService:
             "price_display_en": format_jod(product.price_minor, "en"),
             "is_available": product.is_available,
             "image_asset_url": product.image_asset_url,
+            # Read by the assistant's tools to give the dish its units (plate, glass...).
+            "units_json": product.units_json,
         }
 
     MAX_LISTED_PRODUCTS = 40

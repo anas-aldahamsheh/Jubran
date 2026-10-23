@@ -6,6 +6,7 @@ import { useMotionValue } from "motion/react";
 import { apiFetch, ApiException, getSocketUrl } from "@/lib/api";
 import { speechLocale } from "@/lib/language";
 import { type LiveOrderAction, LiveVoiceCall } from "@/lib/liveVoiceClient";
+import type { DoneEntry } from "@/lib/assistantDone";
 import { canRecordClips, canStreamMicrophone, recordUtterance } from "@/lib/voiceAudio";
 import { useLanguage } from "@/context/LanguageContext";
 
@@ -29,6 +30,8 @@ export interface VoiceTurnResult {
   user_text?: string;
   draft?: unknown;
   action?: unknown;
+  /** What the turn really did (the server's record). */
+  done?: unknown;
 }
 
 export interface VoiceCallEvents {
@@ -40,6 +43,8 @@ export interface VoiceCallEvents {
   onLiveAction: (action: LiveOrderAction) => void;
   /** Live calls: the confirm button could not send the order (the summary changed). */
   onLiveConfirmFailed: () => void;
+  /** Live calls: what the waiter's reply really did (the server's record). */
+  onLiveDone: (done: DoneEntry[]) => void;
   /** Step-by-step calls: one whole exchange. */
   onTurn: (result: VoiceTurnResult) => void;
   /** Something the guest should read in the conversation (a turn that failed). */
@@ -303,6 +308,7 @@ export function useVoiceCall(open: boolean, events: VoiceCallEvents) {
       },
       onTool: (name) => setTool(name),
       onAction: (action) => eventsRef.current.onLiveAction(action),
+      onDone: (done) => eventsRef.current.onLiveDone(done),
       onDraft: () => eventsRef.current.onDraftChanged(),
       onConfirmFailed: () => eventsRef.current.onLiveConfirmFailed(),
       onEnded: (reason) => {

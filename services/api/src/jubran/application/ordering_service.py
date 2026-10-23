@@ -4,7 +4,7 @@ import hashlib
 import json
 import re
 from datetime import datetime, timezone, timedelta
-from typing import Optional, List, Dict, Any
+from typing import Optional, List, Dict, Any, Tuple
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, update, delete
 from sqlalchemy.exc import IntegrityError
@@ -22,12 +22,15 @@ from jubran.domain.exceptions import (
     BusinessRuleError,
 )
 from jubran.domain.money import format_jod, fils_to_jod
+from jubran.domain.units import choose_unit, line_unit, resolve_unit
 from jubran.application.order_numbers import next_order_number
+from jubran.application.serving_units import CategoryNames, category_names, dish_units, line_unit_fields
 from jubran.infrastructure.auth.tokens import hash_token
 
 SUBMIT_ORDER_OPERATION = "submit_order"
 
-# Guests see exactly three order states (the spec); serving does not add a fourth.
+# What guests see for each order state. A ready order the staff marked as served shows as
+# delivered (SERVED_LABELS), so guests follow the same four steps as the staff screens.
 CUSTOMER_STATUS_LABELS = {
     OrderStatus.PENDING_APPROVAL: ("بانتظار التأكيد", "Awaiting confirmation"),
     OrderStatus.PREPARING: ("قيد التحضير", "Preparing"),
@@ -35,6 +38,15 @@ CUSTOMER_STATUS_LABELS = {
     OrderStatus.CANCELLED: ("أُلغي", "Cancelled"),
     OrderStatus.CLOSED: ("أُغلق", "Closed"),
 }
+SERVED_LABELS = ("تم التسليم", "Delivered")
+
+
+def customer_status_labels(order: OrderModel) -> Tuple[str, str]:
+    """The state a guest sees (Arabic, English): awaiting confirmation, preparing, ready or delivered,
+    the same four steps as the staff screens (or cancelled/closed)."""
+    if order.status == OrderStatus.READY and order.served_at is not None:
+        return SERVED_LABELS
+    return CUSTOMER_STATUS_LABELS.get(order.status, (order.status.value, order.status.value))
 
 
 _CONTROL_CHARACTERS = re.compile(r"[\x00-\x08\x0b-\x1f\x7f\u200b-\u200f\u202a-\u202e\u2066-\u2069]")
@@ -56,7 +68,7 @@ def summary_fingerprint(items: List[Dict[str, Any]]) -> str:
     """Hash of everything the guest agrees to when confirming (order of lines is irrelevant)."""
     lines = sorted(
         (item["line_id"], item["product_id"], item["quantity"], item["note"] or "",
-         item["unit_price_minor"], bool(item["is_available"]))
+         item["unit_price_minor"], bool(item["is_available"]), item.get("unit") or "")
         for item in items
     )
     return hashlib.sha256(json.dumps(lines, ensure_ascii=False).encode("utf-8")).hexdigest()
@@ -81,10 +93,74 @@ def new_line_times(draft: DraftOrderModel, count: int) -> List[datetime]:
 class DraftOperationError(Exception):
     """A batch of basket changes was refused; nothing in the batch was saved."""
 
-    def __init__(self, code: str, index: int):
+    def __init__(self, code: str, index: int, details: Optional[Dict[str, Any]] = None):
         super().__init__(code)
         self.code = code
         self.index = index
+        self.details = details or {}
+
+
+# What each change to a line may carry besides "op" ("line" is line_id in the basket and
+# item_id in a sent order). A field a change can't apply is refused, never silently dropped.
+# "update" sets the quantity (0 removes the line), the note ("" removes it) and/or the unit;
+# "set_quantity" is its older name. "split" gives part of a line its own note and/or unit.
+LINE_OPERATION_FIELDS = {
+    "add": {"product_id", "quantity", "unit", "note"},
+    "update": {"line", "product_id", "quantity", "unit", "note"},
+    "set_quantity": {"line", "product_id", "quantity", "unit", "note"},
+    "split": {"line", "product_id", "quantity", "unit", "note"},
+    "remove": {"line", "product_id"},
+}
+
+
+def given_fields(operation: Dict[str, Any]) -> set:
+    """The fields a change really carries: None is not given; an empty note means "remove the note"."""
+    fields = {key for key, value in operation.items()
+              if key != "op" and value is not None and (value != "" or key == "note")}
+    if operation.get("op") == "remove" and operation.get("quantity") == 0:
+        fields.discard("quantity")  # removing is quantity 0 anyway
+    return fields
+
+
+def unsupported_fields(operation: Dict[str, Any], line_key: str) -> List[str]:
+    """Fields given to a change that it can't apply (``line_key`` names the line's id field)."""
+    allowed = {line_key if field == "line" else field
+               for field in LINE_OPERATION_FIELDS.get(operation.get("op"), set())}
+    return sorted(given_fields(operation) - allowed)
+
+
+def allowed_fields(kind: Any, line_key: str) -> List[str]:
+    return sorted(line_key if field == "line" else field for field in LINE_OPERATION_FIELDS.get(kind, set()))
+
+
+def unit_required(units: List[str]) -> BusinessRuleError:
+    """A dish served several ways was added without saying which (e.g. a plate or a box)."""
+    return BusinessRuleError(f"اختار طريقة التقديم: {' أو '.join(units)}.", "UNIT_REQUIRED", 422,
+                             {"units": units})
+
+
+def _item_unit(item: DraftItemModel, categories: CategoryNames) -> str:
+    """A basket line's unit: as the guest chose it, while the dish still offers it."""
+    return line_unit(item.unit, dish_units(item.product, categories))
+
+
+def _merge_same_lines(planned: Dict[str, Dict[str, Any]], touched: Dict[str, int]) -> Dict[str, Dict[str, Any]]:
+    """Lines a change made the same dish, unit and note as another become one (the earlier
+    line), as adding does. Lines no change touched are left as they are."""
+    merged: Dict[str, Dict[str, Any]] = {}
+    first: Dict[Tuple[Any, ...], str] = {}
+    for key, line in planned.items():
+        same_as = first.get((line["product_id"], line["unit"], line["note"]))
+        if same_as is None or (key not in touched and same_as not in touched):
+            first.setdefault((line["product_id"], line["unit"], line["note"]), key)
+            merged[key] = line
+            continue
+        index = max(touched.get(key, -1), touched.get(same_as, -1))
+        if merged[same_as]["quantity"] + line["quantity"] > MAX_LINE_QUANTITY:
+            raise DraftOperationError("QUANTITY_LIMIT", index)
+        merged[same_as]["quantity"] += line["quantity"]
+        touched[same_as] = index
+    return merged
 
 
 class OrderingService:
@@ -121,10 +197,12 @@ class OrderingService:
             draft = open_drafts[0]
             if len(open_drafts) > 1:
                 now = datetime.now(timezone.utc)
-                matching_items = {(item.product_id, item.note): item for item in draft.items}
+                categories = await category_names(db)
+                matching_items = {(item.product_id, _item_unit(item, categories), item.note): item
+                                  for item in draft.items}
                 for duplicate in open_drafts[1:]:
                     for item in duplicate.items:
-                        key = (item.product_id, item.note)
+                        key = (item.product_id, _item_unit(item, categories), item.note)
                         existing_item = matching_items.get(key)
                         if existing_item:
                             existing_item.quantity = min(50, existing_item.quantity + item.quantity)
@@ -163,7 +241,8 @@ class OrderingService:
     async def get_draft_summary(cls, db: AsyncSession, customer_session_id: str, table_session_id: str) -> Dict[str, Any]:
         """Return authoritative draft summary with calculated totals."""
         draft = await cls.get_or_create_open_draft(db, customer_session_id, table_session_id)
-        
+        categories = await category_names(db)
+
         items_summary = []
         total_minor = 0
 
@@ -181,6 +260,7 @@ class OrderingService:
                 "unit_price_display_ar": format_jod(product.price_minor, "ar"),
                 "unit_price_display_en": format_jod(product.price_minor, "en"),
                 "quantity": item.quantity,
+                **line_unit_fields(_item_unit(item, categories), product.name_ar, product.name_en),
                 "note": item.note,
                 "line_total_minor": line_total_minor,
                 "line_total_display_ar": format_jod(line_total_minor, "ar"),
@@ -208,9 +288,13 @@ class OrderingService:
         table_session_id: str,
         product_id: str,
         quantity: int = 1,
-        note: Optional[str] = None
+        note: Optional[str] = None,
+        unit: Optional[str] = None
     ) -> Dict[str, Any]:
-        """Add item to draft or increment quantity if matching note exists."""
+        """Add item to draft, or increase the line with the same unit and note.
+
+        A dish served several ways needs ``unit`` (one of its units); a dish with one unit gets it.
+        """
         if quantity < 1 or quantity > 50:
             raise BusinessRuleError("يجب أن تكون الكمية بين 1 و 50.", "INVALID_QUANTITY", 422)
 
@@ -219,12 +303,18 @@ class OrderingService:
             raise EntityNotFoundException("Product", product_id)
         if not product.is_available:
             raise ProductUnavailableException(product.name_ar)
+        categories = await category_names(db)
+        units = dish_units(product, categories)
+        chosen = choose_unit(unit, units)
+        if chosen is None:
+            raise unit_required(units)
 
         clean_note = sanitize_note(note)
         draft = await cls.get_or_create_open_draft(db, customer_session_id, table_session_id)
 
-        # Look for existing item with identical note
-        existing_item = next((i for i in draft.items if i.product_id == product_id and i.note == clean_note), None)
+        # Look for the same dish, unit and note
+        existing_item = next((i for i in draft.items if i.product_id == product_id and i.note == clean_note
+                              and _item_unit(i, categories) == chosen), None)
         if existing_item:
             existing_item.quantity += quantity
             if existing_item.quantity > 50:
@@ -234,6 +324,7 @@ class OrderingService:
                 draft_order_id=draft.id,
                 product_id=product.id,
                 quantity=quantity,
+                unit=chosen,
                 note=clean_note,
                 created_at=new_line_times(draft, 1)[0],
             )
@@ -307,25 +398,38 @@ class OrderingService:
         """Apply several basket changes as one all-or-nothing change.
 
         Pass 1 works out the resulting basket on plain data and checks every
-        operation (unknown line, unavailable dish, quantity outside 1-50…)
-        without touching the database objects. Only if all are valid does
-        pass 2 write the result, committed once. On any problem nothing is
-        saved and DraftOperationError tells which operation failed.
+        operation (unknown line, unavailable dish, quantity outside 1-50, a unit
+        the dish isn't served in, a field the change can't apply…) without
+        touching the database objects. Lines a change made identical to another
+        (same dish, unit and note) become one, as adding does. Only if all are
+        valid does pass 2 write the result, committed once. On any problem
+        nothing is saved and DraftOperationError tells which operation failed.
         """
         if not operations:
             raise DraftOperationError("EMPTY_OPERATIONS", 0)
         draft = await cls.get_or_create_open_draft(db, customer_session_id, table_session_id)
 
-        def valid_quantity(value: Any, minimum: int) -> bool:
-            return isinstance(value, int) and not isinstance(value, bool) and minimum <= value <= MAX_LINE_QUANTITY
+        def valid_quantity(value: Any, minimum: int, maximum: int = MAX_LINE_QUANTITY) -> bool:
+            return isinstance(value, int) and not isinstance(value, bool) and minimum <= value <= maximum
 
-        # Pass 1: simulate. Keys are existing line ids or "new:<n>" for added lines.
+        # Pass 1: simulate. Keys are existing line ids, or "new:<n>" for lines added or split off.
+        categories = await category_names(db)
+        products: Dict[str, ProductModel] = {item.product_id: item.product for item in draft.items}
         planned: Dict[str, Dict[str, Any]] = {
-            item.id: {"product_id": item.product_id, "note": item.note, "quantity": item.quantity}
-            for item in draft.items
+            item.id: {"product_id": item.product_id, "note": item.note, "quantity": item.quantity,
+                      "unit": _item_unit(item, categories)}
+            for item in sorted(draft.items, key=lambda row: (row.created_at, row.id))
         }
+        touched: Dict[str, int] = {}  # line -> the last change (by index) that touched it
         for index, operation in enumerate(operations):
             kind = operation.get("op")
+            if kind not in LINE_OPERATION_FIELDS:
+                raise DraftOperationError("INVALID_OPERATION", index)
+            extra = unsupported_fields(operation, "line_id")
+            if extra:
+                raise DraftOperationError("UNSUPPORTED_FIELD", index,
+                                          {"fields": extra, "allowed": allowed_fields(kind, "line_id")})
+            fields = given_fields(operation)
             if kind == "add":
                 product_id, quantity = operation.get("product_id"), operation.get("quantity", 1)
                 if not product_id or not valid_quantity(quantity, 1):
@@ -333,43 +437,88 @@ class OrderingService:
                 product = (await db.execute(select(ProductModel).where(ProductModel.id == product_id))).scalar_one_or_none()
                 if not product or not product.is_available:
                     raise DraftOperationError("PRODUCT_UNAVAILABLE", index)
+                products[product.id] = product
+                units = dish_units(product, categories)
+                unit = choose_unit(operation.get("unit"), units)
+                if unit is None:  # served several ways: which one must be known
+                    raise DraftOperationError("UNIT_REQUIRED", index, {"units": units})
                 note = sanitize_note(operation.get("note"))
-                same = next((line for line in planned.values()
-                             if line["product_id"] == product_id and line["note"] == note), None)
+                same = next((key for key, line in planned.items() if line["product_id"] == product_id
+                             and line["unit"] == unit and line["note"] == note), None)
                 if same is not None:
-                    if same["quantity"] + quantity > MAX_LINE_QUANTITY:
+                    if planned[same]["quantity"] + quantity > MAX_LINE_QUANTITY:
                         raise DraftOperationError("QUANTITY_LIMIT", index)
-                    same["quantity"] += quantity
+                    planned[same]["quantity"] += quantity
+                    touched[same] = index
                 else:
-                    planned[f"new:{index}"] = {"product_id": product_id, "note": note, "quantity": quantity}
-            elif kind in ("set_quantity", "remove"):
-                line_id = operation.get("line_id") or ""
-                if line_id not in planned or line_id.startswith("new:"):
-                    raise DraftOperationError("DRAFT_LINE_NOT_FOUND", index)
-                if kind == "set_quantity":
-                    quantity = operation.get("quantity")
-                    if not valid_quantity(quantity, 0):
-                        raise DraftOperationError("INVALID_QUANTITY", index)
-                    if quantity > 0:
-                        planned[line_id]["quantity"] = quantity
-                        continue
+                    planned[f"new:{index}"] = {"product_id": product_id, "note": note, "quantity": quantity,
+                                               "unit": unit}
+                    touched[f"new:{index}"] = index
+                continue
+
+            line_id = operation.get("line_id") or ""
+            line = None if line_id.startswith("new:") else planned.get(line_id)
+            if line is None:
+                raise DraftOperationError("DRAFT_LINE_NOT_FOUND", index)
+            if "product_id" in fields and operation["product_id"] != line["product_id"]:
+                raise DraftOperationError("LINE_PRODUCT_MISMATCH", index)
+            if kind == "remove":
                 del planned[line_id]
-            else:
-                raise DraftOperationError("INVALID_OPERATION", index)
+                continue
+            note = sanitize_note(operation["note"]) if "note" in fields else line["note"]
+            unit = line["unit"]
+            if "unit" in fields:
+                units = dish_units(products[line["product_id"]], categories)
+                unit = resolve_unit(str(operation["unit"]), units)
+                if unit is None:  # a unit this dish isn't served in
+                    raise DraftOperationError("UNIT_NOT_OFFERED", index, {"units": units})
+            touched[line_id] = index
+            if kind == "split":
+                quantity = operation.get("quantity")
+                if not valid_quantity(quantity, 1, line["quantity"]):
+                    raise DraftOperationError("INVALID_QUANTITY", index)
+                if (note, unit) == (line["note"], line["unit"]):
+                    raise DraftOperationError("SPLIT_WITHOUT_CHANGE", index)
+                if quantity < line["quantity"]:
+                    line["quantity"] -= quantity
+                    planned[f"new:{index}"] = {"product_id": line["product_id"], "note": note,
+                                               "quantity": quantity, "unit": unit}
+                    touched[f"new:{index}"] = index
+                else:  # all of it: the whole line changes
+                    line["note"], line["unit"] = note, unit
+                continue
+            if not fields & {"quantity", "note", "unit"}:
+                raise DraftOperationError("NOTHING_TO_CHANGE", index)
+            if "quantity" in fields:
+                quantity = operation["quantity"]
+                if not valid_quantity(quantity, 0):
+                    raise DraftOperationError("INVALID_QUANTITY", index)
+                if quantity == 0:
+                    del planned[line_id]
+                    continue
+                line["quantity"] = quantity
+            line["note"], line["unit"] = note, unit
+        planned = _merge_same_lines(planned, touched)
 
         # Pass 2: write the planned basket in one commit.
         added = [key for key in planned if key.startswith("new:")]
         times = dict(zip(added, new_line_times(draft, len(added))))
         for item in list(draft.items):
-            if item.id not in planned:
+            line = planned.get(item.id)
+            if line is None:
                 draft.items.remove(item)
                 await db.delete(item)
-            else:
-                item.quantity = planned[item.id]["quantity"]
+                continue
+            item.quantity = line["quantity"]
+            if line["note"] != item.note:
+                item.note = line["note"]
+            if line["unit"] != _item_unit(item, categories):
+                item.unit = line["unit"]
         for key, line in planned.items():
             if key.startswith("new:"):
                 new_line = DraftItemModel(draft_order_id=draft.id, product_id=line["product_id"],
-                                          quantity=line["quantity"], note=line["note"], created_at=times[key])
+                                          quantity=line["quantity"], unit=line["unit"], note=line["note"],
+                                          created_at=times[key])
                 db.add(new_line)
                 draft.items.append(new_line)
         draft.version += 1
@@ -495,9 +644,12 @@ class OrderingService:
 
         # The order must be exactly what the guest reviewed: a price change, a
         # removed dish or an item that ran out since then needs a fresh review.
+        categories = await category_names(db)
+        units = {item.id: _item_unit(item, categories) for item in draft.items}
         current_items = [
             {"line_id": item.id, "product_id": item.product_id, "quantity": item.quantity, "note": item.note,
-             "unit_price_minor": item.product.price_minor, "is_available": item.product.is_available}
+             "unit_price_minor": item.product.price_minor, "is_available": item.product.is_available,
+             "unit": units[item.id]}
             for item in draft.items
         ]
         if conf.summary_fingerprint != summary_fingerprint(current_items):
@@ -567,6 +719,7 @@ class OrderingService:
                 product_name_snapshot_en=prod.name_en,
                 unit_price_minor_snapshot=prod.price_minor,
                 quantity=item.quantity,
+                unit=units[item.id],
                 note=item.note,
                 line_total_minor=line_total
             ))
@@ -575,6 +728,7 @@ class OrderingService:
                 "name_ar": prod.name_ar,
                 "name_en": prod.name_en,
                 "quantity": item.quantity,
+                **line_unit_fields(units[item.id], prod.name_ar, prod.name_en),
                 "unit_price_display": format_jod(prod.price_minor, "ar"),
                 "unit_price_display_en": format_jod(prod.price_minor, "en"),
                 "line_total_display": format_jod(line_total, "ar"),
@@ -641,17 +795,18 @@ class OrderingService:
 
     @staticmethod
     async def get_orders_for_customer(db: AsyncSession, table_session_id: str,
-                                      customer_session_id: Optional[str] = None) -> List[Dict[str, Any]]:
-        """Orders of the current visit (all guests at the table), with exactly 3 customer-visible states.
+                                      customer_session_id: str) -> List[Dict[str, Any]]:
+        """The asking guest's own orders of the current visit (other guests at the table don't see
+        them), each in one of the four states guests see: awaiting confirmation, preparing, ready, delivered.
 
-        ``mine`` marks the asking guest's own orders; only those can be changed
-        (``editable``), and only until they are ready or served.
+        They can be changed (``editable``) only until they are ready or served.
         """
         from jubran.application.order_amendment_service import GUEST_CANCEL_NOTE, lock_reason
 
         stmt = (
             select(OrderModel)
-            .where(OrderModel.table_session_id == table_session_id)
+            .where(OrderModel.table_session_id == table_session_id,
+                   OrderModel.customer_session_id == customer_session_id)
             .options(selectinload(OrderModel.items), selectinload(OrderModel.amendments))
             .order_by(OrderModel.created_at.desc())
         )
@@ -659,14 +814,15 @@ class OrderingService:
 
         result = []
         for o in orders:
-            mine = customer_session_id is not None and o.customer_session_id == customer_session_id
             locked = lock_reason(o)
+            labels = customer_status_labels(o)
             items_list = [
                 {
                     "item_id": it.id,
                     "name_ar": it.product_name_snapshot_ar,
                     "name_en": it.product_name_snapshot_en or it.product_name_snapshot_ar,
                     "quantity": it.quantity,
+                    **line_unit_fields(it.unit, it.product_name_snapshot_ar, it.product_name_snapshot_en),
                     "unit_price_display": format_jod(it.unit_price_minor_snapshot, "ar"),
                     "unit_price_display_en": format_jod(it.unit_price_minor_snapshot, "en"),
                     "line_total_display": format_jod(it.line_total_minor, "ar"),
@@ -681,14 +837,13 @@ class OrderingService:
                 "order_id": o.id,
                 "order_number": o.order_number,
                 "version": o.version,
-                "mine": mine,
-                "editable": mine and locked is None,
+                "editable": locked is None,
                 "locked_reason": locked,
                 "amended": bool(o.amendments),
                 "cancelled_by_guest": o.status == OrderStatus.CANCELLED and o.closure_note == GUEST_CANCEL_NOTE,
                 "status": o.status.value,
-                "status_display_ar": CUSTOMER_STATUS_LABELS.get(o.status, ("", ""))[0] or o.status.value,
-                "status_display_en": CUSTOMER_STATUS_LABELS.get(o.status, ("", ""))[1] or o.status.value,
+                "status_display_ar": labels[0],
+                "status_display_en": labels[1],
                 "is_served": o.served_at is not None,
                 "total_minor": total_minor,
                 "total_display_ar": format_jod(total_minor, "ar"),

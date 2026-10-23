@@ -162,8 +162,11 @@ class Settings(BaseSettings):
     # section uses (and suggests) before it is saved, with the keys below.
     GEMINI_API_KEY: Optional[str] = None
     OPENAI_API_KEY: Optional[str] = None
+    ANTHROPIC_API_KEY: Optional[str] = None
     GEMINI_TEXT_MODEL: str = "gemini-2.5-flash"
     OPENAI_TEXT_MODEL: str = "gpt-6-luna"
+    # Claude writes the chat only (it has no menu search, speech to text or live voice).
+    ANTHROPIC_TEXT_MODEL: str = "claude-haiku-5-5"
     GEMINI_EMBEDDING_MODEL: str = "gemini-embedding-001"
     OPENAI_EMBEDDING_MODEL: str = "text-embedding-3-small"
     # Menu search before its section is saved: "auto" uses a provider this server has a key for.

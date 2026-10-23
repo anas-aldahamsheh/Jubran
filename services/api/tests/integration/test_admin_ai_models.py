@@ -201,9 +201,8 @@ async def test_openai_responses_tool_round_uses_selected_reasoning():
             {"type": "output_text", "text": "هذه أقسام القائمة."}]}]})
 
     chat = OpenAIAgentChat(RuntimeModelConfig("openai", "gpt-test", "test-key",
-                                                reasoning_effort="high"), [], "system instructions")
-    await chat._client.aclose()
-    chat._client = httpx.AsyncClient(transport=httpx.MockTransport(responder))
+                                                reasoning_effort="high"), [], "system instructions",
+                           client=httpx.AsyncClient(transport=httpx.MockTransport(responder)))
     try:
         first = await chat.send_message("شو عندكم؟")
         assert first.function_calls[0].name == "search_knowledge"

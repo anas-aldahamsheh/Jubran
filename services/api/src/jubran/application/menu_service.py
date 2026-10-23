@@ -8,7 +8,9 @@ from jubran.infrastructure.db.models import MenuCategoryModel, ProductModel, Pro
 from jubran.domain.enums import DraftStatus
 from jubran.domain.exceptions import BusinessRuleError, EntityNotFoundException
 from jubran.domain.money import format_jod, fils_to_jod
+from jubran.domain.units import units_to_json
 from jubran.application.ai.content_state import bump_content_version
+from jubran.application.serving_units import category_names, dish_units_fields
 from jubran.infrastructure.media_store import media_store
 
 
@@ -101,24 +103,8 @@ class MenuService:
             stmt = stmt.where(ProductModel.is_available == True)
 
         products = (await db.execute(stmt)).scalars().all()
-        return [
-            {
-                "id": p.id,
-                "category_id": p.category_id,
-                "name_ar": p.name_ar,
-                "name_en": p.name_en,
-                "description_ar": p.description_ar,
-                "description_en": p.description_en,
-                "price_minor": p.price_minor,
-                "price_jod": str(fils_to_jod(p.price_minor)),
-                "price_display_ar": format_jod(p.price_minor, "ar"),
-                "price_display_en": format_jod(p.price_minor, "en"),
-                "is_available": p.is_available,
-                "image_asset_url": p.image_asset_url,
-                "images": MenuService._format_product_images(p)
-            }
-            for p in products
-        ]
+        categories = await category_names(db)
+        return [MenuService._format_product(p, categories) for p in products]
 
     @staticmethod
     async def get_product(db: AsyncSession, product_id: str) -> Dict[str, Any]:
@@ -129,7 +115,10 @@ class MenuService:
         p = (await db.execute(stmt)).scalar_one_or_none()
         if not p:
             raise EntityNotFoundException("Product", product_id)
+        return MenuService._format_product(p, await category_names(db))
 
+    @staticmethod
+    def _format_product(p: ProductModel, categories: Dict[str, Any]) -> Dict[str, Any]:
         return {
             "id": p.id,
             "category_id": p.category_id,
@@ -143,7 +132,9 @@ class MenuService:
             "price_display_en": format_jod(p.price_minor, "en"),
             "is_available": p.is_available,
             "image_asset_url": p.image_asset_url,
-            "images": MenuService._format_product_images(p)
+            "images": MenuService._format_product_images(p),
+            # How it is counted (plate, glass...): the guest picks one when there are several.
+            **dish_units_fields(p, categories),
         }
 
     @staticmethod
@@ -264,9 +255,10 @@ class MenuService:
         description_ar: Optional[str] = None,
         description_en: Optional[str] = None,
         is_available: bool = True,
-        image_asset_url: Optional[str] = None
+        image_asset_url: Optional[str] = None,
+        units: Optional[List[str]] = None
     ) -> Dict[str, Any]:
-        """Create a new product in the menu."""
+        """Create a new product in the menu (no units: its unit is chosen automatically)."""
         cat_stmt = select(MenuCategoryModel).where(MenuCategoryModel.id == category_id)
         category = (await db.execute(cat_stmt)).scalar_one_or_none()
         if not category:
@@ -298,6 +290,7 @@ class MenuService:
             currency="JOD",
             is_available=is_available,
             image_asset_url=image_asset_url.strip() if image_asset_url else None,
+            units_json=units_to_json(units or []),
             sort_order=max_sort + 10,
             version=1
         )
@@ -339,9 +332,13 @@ class MenuService:
         description_en: Optional[str] = None,
         price_minor: Optional[int] = None,
         is_available: Optional[bool] = None,
-        image_asset_url: Optional[str] = None
+        image_asset_url: Optional[str] = None,
+        units: Optional[List[str]] = None
     ) -> Dict[str, Any]:
-        """Update approved product editable fields: name, description, price, category, etc."""
+        """Update approved product editable fields: name, description, price, category, units, etc.
+
+        ``units=[]`` goes back to the automatic unit; None leaves the units as they are.
+        """
         stmt = select(ProductModel).where(ProductModel.id == product_id)
         product = (await db.execute(stmt)).scalar_one_or_none()
         if not product:
@@ -386,6 +383,13 @@ class MenuService:
 
         if image_asset_url is not None:
             product.image_asset_url = image_asset_url.strip() or None
+
+        if units is not None:
+            new_units = units_to_json(units)
+            if new_units != product.units_json:
+                # Baskets holding the dish show its units: a summary shown before must be reviewed again.
+                await invalidate_open_drafts_with(db, product_id)
+            product.units_json = new_units
 
         product.version += 1
         await bump_content_version(db)

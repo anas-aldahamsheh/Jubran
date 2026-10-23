@@ -26,7 +26,7 @@ async def test_english_guest_gets_english_fixed_reply(client, db_session, monkey
     tea = (await db_session.execute(select(ProductModel).where(ProductModel.name_ar == "شاي"))).scalar_one()
     turns = iter([
         ScriptedChat([model_response(model_call("search_knowledge", query="tea", source_types=["product"])),
-                      model_response(model_call("update_draft_order", operations=[{"op": "add", "product_id": tea.id, "quantity": 1}])),
+                      model_response(model_call("update_draft_order", operations=[{"op": "add", "product_id": tea.id, "quantity": 1, "guest_gave_quantity": True}])),
                       *summary_calls(),
                       model_response(text="Here is your order. Confirm?")]),
         ScriptedChat([model_response(model_call("submit_order", confirmed_summary=True, guest_words="Yes, send it")),
@@ -35,7 +35,7 @@ async def test_english_guest_gets_english_fixed_reply(client, db_session, monkey
     ])
     languages = []
 
-    def create_chat(cls, history, table, config, draft, language=None):
+    def create_chat(cls, history, table, config, draft, language=None, menu=None):
         languages.append(language)
         return next(turns)
 

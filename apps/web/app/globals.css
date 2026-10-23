@@ -277,6 +277,35 @@
   0% { transform: translateX(100%); }
   65%, 100% { transform: translateX(-100%); }
 }
+/* The assistant's live step ("Checking the menu…"): a soft light passes over the words. */
+@keyframes step-shimmer {
+  from { background-position: 200% 0; }
+  to { background-position: -100% 0; }
+}
+@keyframes step-shimmer-rtl {
+  from { background-position: -100% 0; }
+  to { background-position: 200% 0; }
+}
+@utility animate-step-shimmer {
+  background-image: linear-gradient(90deg, var(--ink-muted) 0%, var(--ink-muted) 38%, var(--brand) 50%,
+    var(--ink-muted) 62%, var(--ink-muted) 100%);
+  background-size: 200% 100%;
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  animation: step-shimmer 2.2s linear infinite;
+  &:where([dir="rtl"], [dir="rtl"] *) {
+    animation-name: step-shimmer-rtl;
+  }
+}
+/* The cursor at the end of a reply while it is being written. */
+@keyframes caret-blink {
+  0%, 50% { opacity: 1; }
+  50.01%, 100% { opacity: 0.15; }
+}
+@utility animate-caret {
+  animation: caret-blink 0.9s ease-in-out infinite;
+}
 /* Something that only needs showing when a wait is long: invisible first, then it rises in
    (the wait is set where it is used, e.g. [--late-delay:6s]). */
 @keyframes late-in {

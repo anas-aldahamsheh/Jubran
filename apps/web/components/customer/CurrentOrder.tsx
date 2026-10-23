@@ -16,13 +16,15 @@ import { ButtonSpinner, EmptyState, LoadError, Reveal } from "@/components/ui/Fe
 import { BasketRowsSkeleton } from "@/components/customer/GuestSkeletons";
 import { useAutoRetry } from "@/lib/useAutoRetry";
 import { StatusPill } from "@/components/ui/StatusPill";
+import { UnitTag } from "@/components/ui/UnitTag";
 import { spring } from "@/lib/motion";
 import { otherLanguage } from "@/lib/otherLanguage";
+import { unitLabel, type LineUnit } from "@/lib/units";
 
 /** Same limit as the server (MAX_LINE_QUANTITY). */
 const MAX_LINE_QUANTITY = 50;
 
-interface DraftItem {
+interface DraftItem extends LineUnit {
   line_id: string;
   product_id: string;
   name_ar: string;
@@ -344,7 +346,10 @@ export function CurrentOrder({ onSubmitted, onDraftCountChange, variant = "page"
                     <div className="min-w-0 flex-1">
                       <div className="flex items-start justify-between gap-3">
                         <div className="min-w-0">
-                          <h3 className="font-bold leading-snug text-ink">{lang === "ar" ? item.name_ar : item.name_en}</h3>
+                          <h3 className="font-bold leading-snug text-ink">
+                            {lang === "ar" ? item.name_ar : item.name_en}
+                            <UnitTag label={unitLabel(item, lang)} className="ms-1.5" />
+                          </h3>
                           <p className="text-end text-xs text-subtle" {...otherLanguage(lang)}>{lang === "ar" ? item.name_en : item.name_ar}</p>
                         </div>
                         <span className="shrink-0 font-bold tabular-nums text-ink @md:hidden">{price(item.line_total_display_ar, item.line_total_display_en)}</span>
@@ -441,6 +446,7 @@ export function CurrentOrder({ onSubmitted, onDraftCountChange, variant = "page"
                       <p className="font-semibold text-ink">
                         <span className="me-1.5 inline-flex min-w-7 justify-center rounded-lg bg-brand-soft px-1.5 py-0.5 text-sm font-bold tabular-nums text-brand-soft-ink">{item.quantity}×</span>
                         {lang === "ar" ? item.name_ar : item.name_en}
+                        <UnitTag label={unitLabel(item, lang)} className="ms-1.5" />
                       </p>
                       {item.note && <p className="mt-1 text-xs text-accent-ink">{item.note}</p>}
                     </div>

@@ -2,7 +2,7 @@
 
 The assistant uses AI for four separate jobs, each with its own section in the admin
 settings (its own provider, model and key):
-- chat: the waiter that talks with guests and uses the tools,
+- chat: the waiter that talks with guests and uses the tools (OpenAI, Gemini or Claude),
 - embedding: menu search by meaning,
 - transcription: a guest's recorded speech turned into text (dictation, turn-by-turn voice),
 - voice: live spoken conversation (OpenAI GPT-Live, which hands each request to the chat),
@@ -24,7 +24,7 @@ from jubran.settings import settings
 
 # The providers each purpose can use, the usual one first.
 PROVIDERS = {
-    "chat": ("openai", "gemini"),
+    "chat": ("openai", "gemini", "anthropic"),  # Claude writes the chat only
     "embedding": ("gemini", "openai"),
     "transcription": ("openai", "gemini"),
     "voice": ("openai",),  # GPT-Live only
@@ -44,7 +44,8 @@ def decrypt_key(ciphertext: str) -> str:
 
 
 def environment_key(provider: str) -> Optional[str]:
-    return settings.OPENAI_API_KEY if provider == "openai" else settings.GEMINI_API_KEY
+    return {"openai": settings.OPENAI_API_KEY, "gemini": settings.GEMINI_API_KEY,
+            "anthropic": settings.ANTHROPIC_API_KEY}.get(provider)
 
 
 def default_model(purpose: str, provider: str) -> str:
@@ -52,6 +53,7 @@ def default_model(purpose: str, provider: str) -> str:
     return {
         ("chat", "openai"): settings.OPENAI_TEXT_MODEL,
         ("chat", "gemini"): settings.GEMINI_TEXT_MODEL,
+        ("chat", "anthropic"): settings.ANTHROPIC_TEXT_MODEL,
         ("embedding", "openai"): settings.OPENAI_EMBEDDING_MODEL,
         ("embedding", "gemini"): settings.GEMINI_EMBEDDING_MODEL,
         ("transcription", "openai"): settings.OPENAI_TRANSCRIBE_MODEL,
@@ -66,7 +68,8 @@ def default_provider(purpose: str) -> Optional[str]:
         return None  # live voice starts when the administrator switches it on
     if purpose == "embedding" and settings.EMBEDDING_PROVIDER != "auto":
         return settings.EMBEDDING_PROVIDER
-    return next((provider for provider in ("gemini", "openai") if environment_key(provider)), None)
+    return next((provider for provider in ("gemini", "openai", "anthropic")
+                 if provider in PROVIDERS[purpose] and environment_key(provider)), None)
 
 
 @dataclass(frozen=True)

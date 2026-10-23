@@ -59,12 +59,12 @@ async def test_a_whole_visit(client, db_session, new_browser):
     floor = (await admin.get("/api/v1/admin/floor")).json()
     assert next(t for t in floor["tables"] if t["table_number"] == "T7")["base_state"] == "ORDER_PENDING"
 
-    # E/F/G. Kitchen steps; the guest sees exactly three states.
-    seen = []
+    # E/F/G. Kitchen steps; the guest follows the same four states as the staff.
+    seen = [(await guest.get("/api/v1/orders")).json()[0]["status_display_en"]]
     for step in ("start-preparing", "mark-ready", "mark-served"):
         assert (await admin.post(f"/api/v1/admin/orders/{order['order_id']}/{step}")).status_code == 200
-        seen.append((await guest.get("/api/v1/orders")).json()[0]["status"])
-    assert seen == ["PREPARING", "READY", "READY"]  # "served" is a staff marker, not a fourth state
+        seen.append((await guest.get("/api/v1/orders")).json()[0]["status_display_en"])
+    assert seen == ["Awaiting confirmation", "Preparing", "Ready", "Delivered"]
 
     # I. Bill, then an optional rating.
     assert (await guest.post("/api/v1/service-requests", json={"type": "BILL"})).json()["type"] == "BILL"

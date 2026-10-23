@@ -18,10 +18,14 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from jubran.application.events import record_event
-from jubran.application.ordering_service import MAX_LINE_QUANTITY, sanitize_note
+from jubran.application.ordering_service import (
+    LINE_OPERATION_FIELDS, MAX_LINE_QUANTITY, allowed_fields, given_fields, sanitize_note, unsupported_fields,
+)
+from jubran.application.serving_units import category_names, dish_units, line_unit_fields
 from jubran.domain.enums import OrderStatus, TableSessionStatus
 from jubran.domain.exceptions import BusinessRuleError, TableSessionClosedException
 from jubran.domain.money import format_jod
+from jubran.domain.units import choose_unit, line_unit, resolve_unit
 from jubran.infrastructure.db.models import (
     OrderAmendmentModel, OrderItemModel, OrderModel, ProductModel, TableSessionModel,
 )
@@ -41,10 +45,11 @@ LOCK_MESSAGES = {
 class AmendmentOperationError(Exception):
     """One change in the batch was refused; nothing was saved."""
 
-    def __init__(self, code: str, index: int):
+    def __init__(self, code: str, index: int, details: Optional[Dict[str, Any]] = None):
         super().__init__(code)
         self.code = code
         self.index = index
+        self.details = details or {}
 
 
 def lock_reason(order: OrderModel) -> Optional[str]:
@@ -68,26 +73,60 @@ def order_locked(reason: str) -> BusinessRuleError:
 def _line(item: OrderItemModel) -> Dict[str, Any]:
     return {"item_id": item.id, "product_id": item.product_id, "name_ar": item.product_name_snapshot_ar,
             "name_en": item.product_name_snapshot_en, "unit_price_minor": item.unit_price_minor_snapshot,
-            "quantity": item.quantity, "note": item.note}
+            "quantity": item.quantity, "unit": item.unit, "note": item.note}
+
+
+def _unit(line: Dict[str, Any]) -> Dict[str, Any]:
+    return line_unit_fields(line.get("unit"), line["name_ar"], line.get("name_en"))
+
+
+def _attribute_changes(previous: Dict[str, Any], line: Dict[str, Any], base: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """A new note or unit on (part of) a line; ``line`` holds that part's quantity."""
+    changes: List[Dict[str, Any]] = []
+    quantities = {"quantity_before": line["quantity"], "quantity_after": line["quantity"]}
+    if (previous.get("note") or None) != (line.get("note") or None):
+        changes.append({"type": "note_changed", **quantities, **base,
+                        "note_before": previous.get("note"), "note_after": line.get("note")})
+    if previous.get("unit") != line.get("unit"):
+        before = _unit(previous)
+        changes.append({"type": "unit_changed", **quantities, **base, "unit_before": before["unit"],
+                        "unit_before_display_ar": before["unit_display_ar"],
+                        "unit_before_display_en": before["unit_display_en"]})
+    return changes
 
 
 def describe_changes(before: List[Dict[str, Any]], after: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    """What changed, line by line: added dishes, removed dishes and new quantities."""
+    """What changed, line by line: dishes added or removed, new quantities, and new notes or
+    units (for a whole line, or for the part of it the guest gave its own)."""
     old = {line["item_id"]: line for line in before}
+    originals = dict(old)
+    split_out: Dict[str, int] = {}  # how much of each line was given its own note or unit
+    for line in after:
+        if line.get("split_from"):
+            split_out[line["split_from"]] = split_out.get(line["split_from"], 0) + line["quantity"]
     changes: List[Dict[str, Any]] = []
     for line in after:
+        base = {"name_ar": line["name_ar"], "name_en": line["name_en"], **_unit(line), "note": line.get("note"),
+                "unit_price_minor": line["unit_price_minor"], "product_id": line.get("product_id"),
+                "item_id": line.get("item_id")}
+        source = originals.get(line.get("split_from") or "")
+        if source is not None:
+            changes += _attribute_changes(source, line, base)
+            continue
         previous = old.pop(line["item_id"], None) if line.get("item_id") else None
-        base = {"name_ar": line["name_ar"], "name_en": line["name_en"], "note": line.get("note"),
-                "unit_price_minor": line["unit_price_minor"]}
         if previous is None:
             changes.append({"type": "added", "quantity_before": 0, "quantity_after": line["quantity"], **base})
-        elif previous["quantity"] != line["quantity"]:
+            continue
+        kept = line["quantity"] + split_out.get(line["item_id"], 0)
+        if previous["quantity"] != kept:
             changes.append({"type": "quantity_changed", "quantity_before": previous["quantity"],
-                            "quantity_after": line["quantity"], **base})
+                            "quantity_after": kept, **base})
+        changes += _attribute_changes(previous, line, base)
     for line in old.values():
         changes.append({"type": "removed", "quantity_before": line["quantity"], "quantity_after": 0,
-                        "name_ar": line["name_ar"], "name_en": line["name_en"], "note": line.get("note"),
-                        "unit_price_minor": line["unit_price_minor"]})
+                        "name_ar": line["name_ar"], "name_en": line["name_en"], **_unit(line),
+                        "note": line.get("note"), "unit_price_minor": line["unit_price_minor"],
+                        "product_id": line.get("product_id"), "item_id": line.get("item_id")})
     return changes
 
 
@@ -127,8 +166,8 @@ class OrderAmendmentService:
         if not operations:
             raise AmendmentOperationError("EMPTY_OPERATIONS", 0)
 
-        def valid_quantity(value: Any, minimum: int) -> bool:
-            return isinstance(value, int) and not isinstance(value, bool) and minimum <= value <= MAX_LINE_QUANTITY
+        def valid_quantity(value: Any, minimum: int, maximum: int = MAX_LINE_QUANTITY) -> bool:
+            return isinstance(value, int) and not isinstance(value, bool) and minimum <= value <= maximum
 
         products: Dict[str, Optional[ProductModel]] = {}
 
@@ -142,8 +181,16 @@ class OrderAmendmentService:
 
         lines = [_line(item) for item in order.items]
         by_id = {line["item_id"]: line for line in lines}
+        categories = await category_names(db)
         for index, operation in enumerate(operations):
             kind = operation.get("op")
+            if kind not in LINE_OPERATION_FIELDS:
+                raise AmendmentOperationError("INVALID_OPERATION", index)
+            extra = unsupported_fields(operation, "item_id")
+            if extra:
+                raise AmendmentOperationError("UNSUPPORTED_FIELD", index,
+                                              {"fields": extra, "allowed": allowed_fields(kind, "item_id")})
+            fields = given_fields(operation)
             if kind == "add":
                 quantity = operation.get("quantity", 1)
                 dish = await product(operation.get("product_id"))
@@ -151,9 +198,14 @@ class OrderAmendmentService:
                     raise AmendmentOperationError("INVALID_ADD", index)
                 if not dish.is_available:
                     raise AmendmentOperationError("PRODUCT_UNAVAILABLE", index)
+                units = dish_units(dish, categories)
+                unit = choose_unit(operation.get("unit"), units)
+                if unit is None:  # served several ways: which one must be known
+                    raise AmendmentOperationError("UNIT_REQUIRED", index, {"units": units})
                 note = sanitize_note(operation.get("note"))
                 same = next((line for line in lines if line["product_id"] == dish.id and line["note"] == note
-                             and line["unit_price_minor"] == dish.price_minor), None)
+                             and line["unit_price_minor"] == dish.price_minor and not line.get("split_from")
+                             and line_unit(line["unit"], units) == unit), None)
                 if same is not None:
                     if same["quantity"] + quantity > MAX_LINE_QUANTITY:
                         raise AmendmentOperationError("QUANTITY_LIMIT", index)
@@ -161,32 +213,65 @@ class OrderAmendmentService:
                 else:
                     lines.append({"item_id": None, "product_id": dish.id, "name_ar": dish.name_ar,
                                   "name_en": dish.name_en, "unit_price_minor": dish.price_minor,
-                                  "quantity": quantity, "note": note})
-            elif kind in ("set_quantity", "remove"):
-                line = by_id.get(operation.get("item_id") or "")
-                if line is None or line not in lines:
-                    raise AmendmentOperationError("ORDER_ITEM_NOT_FOUND", index)
-                quantity = 0 if kind == "remove" else operation.get("quantity")
-                if not valid_quantity(quantity, 0):
+                                  "quantity": quantity, "unit": unit, "note": note})
+                continue
+
+            line = by_id.get(operation.get("item_id") or "")
+            if line is None or line not in lines:
+                raise AmendmentOperationError("ORDER_ITEM_NOT_FOUND", index)
+            if "product_id" in fields and operation["product_id"] != line["product_id"]:
+                raise AmendmentOperationError("ITEM_PRODUCT_MISMATCH", index)
+            if kind == "remove":
+                lines.remove(line)
+                continue
+            note = sanitize_note(operation["note"]) if "note" in fields else line["note"]
+            unit = line["unit"]
+            if "unit" in fields:
+                dish = await product(line["product_id"])
+                if dish is None:
+                    raise AmendmentOperationError("PRODUCT_UNAVAILABLE", index)
+                units = dish_units(dish, categories)
+                unit = resolve_unit(str(operation["unit"]), units)
+                if unit is None:  # a unit this dish isn't served in
+                    raise AmendmentOperationError("UNIT_NOT_OFFERED", index, {"units": units})
+            if kind == "split":
+                quantity = operation.get("quantity")
+                if not valid_quantity(quantity, 1, line["quantity"]):
                     raise AmendmentOperationError("INVALID_QUANTITY", index)
-                if quantity == 0:
-                    lines.remove(line)
-                elif quantity <= line["quantity"]:
+                if (note, unit) == (line["note"], line["unit"]):
+                    raise AmendmentOperationError("SPLIT_WITHOUT_CHANGE", index)
+                if quantity < line["quantity"]:
+                    # Part of what was already ordered (same price) gets its own note or unit.
+                    line["quantity"] -= quantity
+                    lines.append({**line, "item_id": None, "quantity": quantity, "note": note, "unit": unit,
+                                  "split_from": line["item_id"]})
+                else:  # all of it: the whole line changes
+                    line["note"], line["unit"] = note, unit
+                continue
+            if not fields & {"quantity", "note", "unit"}:
+                raise AmendmentOperationError("NOTHING_TO_CHANGE", index)
+            line["note"], line["unit"] = note, unit
+            if "quantity" not in fields:
+                continue
+            quantity = operation["quantity"]
+            if not valid_quantity(quantity, 0):
+                raise AmendmentOperationError("INVALID_QUANTITY", index)
+            if quantity == 0:
+                lines.remove(line)
+            elif quantity <= line["quantity"]:
+                line["quantity"] = quantity
+            else:
+                # More of a dish is a new request: it must still be available, at today's price.
+                dish = await product(line["product_id"])
+                if dish is None or not dish.is_available:
+                    raise AmendmentOperationError("PRODUCT_UNAVAILABLE", index)
+                extra_quantity = quantity - line["quantity"]
+                if dish.price_minor == line["unit_price_minor"]:
                     line["quantity"] = quantity
                 else:
-                    # More of a dish is a new request: it must still be available, at today's price.
-                    dish = await product(line["product_id"])
-                    if dish is None or not dish.is_available:
-                        raise AmendmentOperationError("PRODUCT_UNAVAILABLE", index)
-                    extra = quantity - line["quantity"]
-                    if dish.price_minor == line["unit_price_minor"]:
-                        line["quantity"] = quantity
-                    else:
-                        lines.append({"item_id": None, "product_id": dish.id, "name_ar": dish.name_ar,
-                                      "name_en": dish.name_en, "unit_price_minor": dish.price_minor,
-                                      "quantity": extra, "note": line["note"]})
-            else:
-                raise AmendmentOperationError("INVALID_OPERATION", index)
+                    lines.append({"item_id": None, "product_id": dish.id, "name_ar": dish.name_ar,
+                                  "name_en": dish.name_en, "unit_price_minor": dish.price_minor,
+                                  "quantity": extra_quantity, "unit": line["unit"], "note": line["note"]})
         return lines
 
     @classmethod
@@ -199,7 +284,7 @@ class OrderAmendmentService:
             "order_status": order.status.value,
             "order_version": order.version,
             "changes": changes,
-            "items_after": [{key: line[key] for key in ("name_ar", "name_en", "quantity", "note")} | {
+            "items_after": [{key: line[key] for key in ("name_ar", "name_en", "quantity", "note")} | _unit(line) | {
                 "line_total_display_ar": format_jod(line["unit_price_minor"] * line["quantity"], "ar"),
                 "line_total_display_en": format_jod(line["unit_price_minor"] * line["quantity"], "en"),
             } for line in after],
@@ -256,22 +341,31 @@ class OrderAmendmentService:
         now = datetime.now(timezone.utc)
         status_at_change = order.status
         kept = {line["item_id"]: line for line in after if line.get("item_id")}
+        originals = {item.id: item for item in order.items}
         for item in list(order.items):
             line = kept.get(item.id)
             if line is None:
                 order.items.remove(item)
                 await db.delete(item)
-            elif line["quantity"] != item.quantity:
+                continue
+            if line["quantity"] != item.quantity:
                 item.quantity = line["quantity"]
                 item.line_total_minor = item.unit_price_minor_snapshot * line["quantity"]
+            if line["note"] != item.note:
+                item.note = line["note"]
+            if line["unit"] != item.unit:
+                item.unit = line["unit"]
         for line in after:
             if not line.get("item_id"):
+                # Part of a line given its own note or unit was ordered with it (not added later).
+                source = originals.get(line.get("split_from") or "")
                 order.items.append(OrderItemModel(
                     order_id=order.id, product_id=line["product_id"],
                     product_name_snapshot_ar=line["name_ar"], product_name_snapshot_en=line["name_en"],
                     unit_price_minor_snapshot=line["unit_price_minor"], quantity=line["quantity"],
-                    note=line["note"], line_total_minor=line["unit_price_minor"] * line["quantity"],
-                    added_at=now,
+                    unit=line["unit"], note=line["note"],
+                    line_total_minor=line["unit_price_minor"] * line["quantity"],
+                    added_at=source.added_at if source is not None else now,
                 ))
         if not after:
             order.status = OrderStatus.CANCELLED

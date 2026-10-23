@@ -27,7 +27,7 @@ async def product_named(db_session, name="شاي"):
 def prepare_then_confirm_script(monkeypatch, product):
     return script_model(monkeypatch,
         [model_response(model_call("search_knowledge", query=product.name_ar, source_types=["product"])),
-         model_response(model_call("update_draft_order", operations=[{"op": "add", "product_id": product.id, "quantity": 1}])),
+         model_response(model_call("update_draft_order", operations=[{"op": "add", "product_id": product.id, "quantity": 1, "guest_gave_quantity": True}])),
          *summary_calls(),
          model_response(text="هذا ملخص طلبك. هل تؤكد؟")],
         [model_response(model_call("submit_order", confirmed_summary=True, guest_words="نعم أكد")),
@@ -49,7 +49,7 @@ async def test_pending_summary_is_stored_safely_and_confirmed_by_any_worker(clie
     product = await product_named(db_session)
     prepare_then_confirm_script(monkeypatch, product)
 
-    prepared = await client.post("/api/v1/assistant/chat", json={"message": "بدي شاي وخلص"})
+    prepared = await client.post("/api/v1/assistant/chat", json={"message": "بدي شاي واحد وخلص"})
     assert prepared.json()["action"]["type"] == "AWAITING_ORDER_CONFIRMATION"
 
     # Nothing is kept in the server process any more...

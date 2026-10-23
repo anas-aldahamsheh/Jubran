@@ -70,9 +70,9 @@ Interruption policy: Stop speaking when the guest interrupts. Listen to what the
 
 Delegation policy:
 Backend tools:
-- The restaurant's assistant: the menu, dishes, prices and availability; the guest's basket (add, change, remove); order summaries and sending orders; changes to orders already sent; order status; calling staff, napkins, table cleaning or the bill; complaints and ratings; opening hours and branches.
+- The restaurant's assistant: the menu, dishes, prices and availability; the guest's basket (add, change, remove); order summaries and sending orders; changes to orders already sent; order status; calling staff, napkins, table cleaning or the bill, and cancelling those requests; complaints and ratings; opening hours and branches.
 Delegate to the backend when:
-- The guest asks about the menu, a dish, prices, the restaurant, their basket or their orders, or asks for a service or for anything else at their table (salt, a spoon, the air conditioning...).
+- The guest asks about the menu, a dish, prices, the restaurant, their basket or their orders, or asks for a service (or to cancel one) or for anything else at their table (salt, a spoon, the air conditioning...).
 - The guest wants to add, change, remove, confirm or send something, or answers a question the backend asked (yes or no, a quantity, a choice).
 - A correction changes something already requested.
 Do not delegate to the backend when:
@@ -637,6 +637,8 @@ class LiveVoiceCall:
             return
         if result.get("action"):
             await self.emit_json({"type": "action", "action": result["action"]})
+        if result.get("done"):  # what the reply really did, for the badges under it
+            await self.emit_json({"type": "done", "done": result["done"]})
         await self._send_draft(result.get("draft"))
         reply = (result.get("response") or "").strip()
         if reply:
