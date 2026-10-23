@@ -58,3 +58,21 @@ async def test_assistant_errors_come_in_both_languages(client, db_session):
     assert error["code"] == "AI_PROVIDER_NOT_CONFIGURED"
     assert error["details"]["message_en"] == "The assistant isn't available right now. You can still order from the menu or call a staff member."
     assert "المنيو" in error["message"]  # the guest gets a way forward, never technical details
+
+
+@pytest.mark.asyncio
+async def test_the_guest_is_answered_in_the_language_they_write_whatever_the_page_language(
+        client, db_session, monkeypatch):
+    await seed_database(db_session)
+    await start_visit(client, db_session, "T4")
+    languages = []
+
+    def create_chat(cls, history, table, config, draft, language=None, menu=None):
+        languages.append((language, draft.get("interface_language", "")[:7]))
+        return ScriptedChat([model_response(text="أهلين!")])
+
+    monkeypatch.setattr(settings, "GEMINI_API_KEY", "offline-test-key")
+    monkeypatch.setattr(AssistantService, "_create_chat", classmethod(create_chat))
+    for message in ("مرحبا", "بدي burger", "hello"):
+        await client.post("/api/v1/assistant/chat", json={"message": message, "language": "en"})
+    assert languages == [("ar", "Arabic "), ("ar", "Arabic "), ("en", "English")]
